@@ -2,50 +2,13 @@
 // Created by Akshay Gillett on 7/9/26.
 //
 
-#include "Main.h"
+#include "rtos.h"
 
 #include <chrono>
 
 #define MAX_TASKS 12 //update this later to a value as needed
 #define SYSTICK_BASE_ADDRESS (0xE000E010UL)
 
-//simulation setup
-//reserve a tiny block of memory for the minimum required ARM Vector Table
-//reserve a tiny block of memory for the minimum required ARM Vector Table
-
-__attribute__((section(".isr_vector"), used))
-void (* const g_pfnVectors[])(void) = {
-    reinterpret_cast<void (*)()>(static_cast<uint32_t>(0x20004000)), // 1. Fake initial stack pointer (Top of RAM)
-    reinterpret_cast<void (*)()>(main),                              // 2. Reset Handler (Where the CPU boots)
-    nullptr,                                                         // 3. NMI Handler
-    reinterpret_cast<void (*)()>(main),                              // 4. HardFault Handler
-    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,   // 5-11. Reserved
-    nullptr,                                                         // 12. SVCall Handler
-    nullptr, nullptr,                                                // 13-14. Reserved
-    nullptr,                                                         // 15. PendSV Handler
-    static_cast<void (*)()>(SysTick_Handler)                         // 16. SysTick Exception Vector!
-};
-
-enum class TaskState : uint8_t {
-    BLOCKED = 0,
-    READY   = 1,
-    RUNNING = 2
-};
-
-struct TaskControlBlock {
-    //function to run the code
-    void (*taskCodeAddress)();
-
-    uint32_t executionPeriod;
-    uint32_t lastRunTime;
-
-    //debug purposes only
-    const char* taskName;
-
-    //priority
-    uint8_t priority; //1-12 (may increase limit later) - be prepared to refactor priority many times
-    TaskState taskState; //READY, RUNNING, BLOCKED/WAITING
-};
 
 static volatile uint32_t globalSystemTicks = 0;
 
@@ -53,9 +16,19 @@ static TaskControlBlock taskControlBlocks[MAX_TASKS];
 static int activeTasks = 0;
 
 void print_char(char c) {
-    // STM32 USART1 Data Register memory location
-    volatile uint32_t* USART1_DR = (volatile uint32_t*)0x40011004;
-    *USART1_DR = c;
+    // STM32F7 USART1 Base is 0x40011000.
+    volatile uint32_t* USART1_CR1 = (volatile uint32_t*)0x40011000;
+    volatile uint32_t* USART1_ISR = (volatile uint32_t*)0x4001101C;
+    volatile uint32_t* USART1_TDR = (volatile uint32_t*)0x40011028;
+
+    // Force enable the USART peripheral (UE = bit 0) and the Transmitter (TE = bit 3)
+    // Now that CubeMX configured the pins, this will successfully hook up the pipe
+    *USART1_CR1 |= (1UL << 0) | (1UL << 3);
+
+    // Wait until Transmit Data Register is empty (bit 7)
+    while (!(*USART1_ISR & (1 << 7)));
+
+    *USART1_TDR = c;
 }
 
 void print_str(const char* str) {
@@ -119,7 +92,7 @@ extern "C" void SysTick_Handler() { //auto called every 1ms
 }
 
 //evaluates priorities and executes ready tasks
-[[noreturn]] void executeTaskLoop() {
+void executeTaskLoop() {
     uint32_t lastPrintedTick = 0xFFFFFFFF; //initialize to a dummy value
 
     while (true) {
@@ -169,28 +142,40 @@ void taskFast() { print_str("⚡ Fast 100ms Task Running\n"); }
 void taskMedium() { print_str("   🐢 Medium 500ms Task Running\n"); }
 void taskSlow() { print_str("      🛑 Slow 1000ms Task Running\n"); }
 
-int main() {
+extern "C" void start_drone_rtos() {
+    // 1. Enable Clocks for GPIOA and USART1 peripherals in the RCC register block
+    volatile uint32_t* RCC_AHB1ENR = (volatile uint32_t*)0x40023830;
+    volatile uint32_t* RCC_APB2ENR = (volatile uint32_t*)0x40023844;
 
-    // QEMU hardware clock init lines we just added
-    CPU_SysTick[1] = 15999UL;
-    CPU_SysTick[2] = 0UL;
-    CPU_SysTick[0] = 7UL;
+    *RCC_AHB1ENR |= (1UL << 0);  // Enable GPIOA Clock
+    *RCC_APB2ENR |= (1UL << 4);  // Enable USART1 Clock
 
+    // 2. STM32F756 Core SysTick Register Map Configuration (216 MHz)
+    volatile uint32_t* STK_CTRL  = (volatile uint32_t*)0xE000E010;
+    volatile uint32_t* STK_LOAD  = (volatile uint32_t*)0xE000E014;
+    volatile uint32_t* STK_VAL   = (volatile uint32_t*)0xE000E018;
+
+    *STK_LOAD = 215999UL; // 1ms intervals at 216 MHz
+    *STK_VAL  = 0UL;
+    *STK_CTRL = 7UL;      // Enable Core Clock, Interupts, and Counter
+
+    // 3. Global Interrupt Enable
     __asm__ volatile("cpsie i" : : : "memory");
 
-    // Register your new dummy tasks
+    // Register your dummy tasks
     initializeNewTask(taskFast, 100, "FastTask");
-    taskControlBlocks[activeTasks - 1].priority = 3;  // Low priority
+    taskControlBlocks[activeTasks - 1].priority = 3;
 
     initializeNewTask(taskMedium, 500, "MedTask");
-    taskControlBlocks[activeTasks - 1].priority = 6;  // Mid priority
+    taskControlBlocks[activeTasks - 1].priority = 6;
 
     initializeNewTask(taskSlow, 1000, "SlowTask");
-    taskControlBlocks[activeTasks - 1].priority = 12; // High priority
+    taskControlBlocks[activeTasks - 1].priority = 12;
 
-    print_str("🎯 Booting RTOS Scheduler Kernel...\n\n");
+    // The peripheral is now awake and ready to transmit!
+    print_str("🎯 Booting Drone RTOS Scheduler Kernel...\n\n");
 
-    // Your exact dispatcher loop call
+    // Start your scheduler dispatcher
     executeTaskLoop();
 }
 

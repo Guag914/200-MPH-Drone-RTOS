@@ -8,9 +8,11 @@ set(CMAKE_CXX_COMPILER_ID GNU)
 # arm-none-eabi- must be part of path environment
 set(TOOLCHAIN_PREFIX                arm-none-eabi-)
 
-set(CMAKE_C_COMPILER                ${TOOLCHAIN_PREFIX}gcc)
-set(CMAKE_ASM_COMPILER              ${CMAKE_C_COMPILER})
-set(CMAKE_CXX_COMPILER              ${TOOLCHAIN_PREFIX}g++)
+# Force ARM GCC toolchain
+set(CMAKE_C_COMPILER /opt/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-gcc)
+set(CMAKE_CXX_COMPILER /opt/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-g++)
+
+set(CMAKE_ASM_COMPILER ${CMAKE_C_COMPILER})
 set(CMAKE_LINKER                    ${TOOLCHAIN_PREFIX}g++)
 set(CMAKE_OBJCOPY                   ${TOOLCHAIN_PREFIX}objcopy)
 set(CMAKE_SIZE                      ${TOOLCHAIN_PREFIX}size)
