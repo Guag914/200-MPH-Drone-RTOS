@@ -9,7 +9,6 @@ showAnalyzer sysbus.usart1
 
 # 3. Load your ELF binary explicitly
 sysbus LoadELF @cmake-build-debug-1/DRONE-RTOS.elf
-sysbus LogPeripheralAccess sysbus.usart1
 
 # 4. Bind the system vectors straight to Flash memory
 cpu VectorTableOffset 0x08000000

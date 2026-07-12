@@ -36,7 +36,7 @@ struct TaskControlBlock {
 };
 
 bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const char* textName);
-void executeTaskLoop(void);
+[[noreturn]] void executeTaskLoop(void);
 
 #endif // __cplusplus
 

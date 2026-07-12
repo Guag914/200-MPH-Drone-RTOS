@@ -4,6 +4,7 @@
 
 #include "rtos.h"
 #include <chrono>
+#include "stm32f7xx.h"
 
 #define MAX_TASKS 12 //update this later to a value as needed
 #define SYSTICK_BASE_ADDRESS (0xE000E010UL)
@@ -15,17 +16,12 @@ static int activeTasks = 0;
 
 void print_char(char c) {
     // STM32F7 USART1 Base is 0x40011000.
-    volatile uint32_t* USART1_CR1 = (volatile uint32_t*)0x40011000;
-    volatile uint32_t* USART1_ISR = (volatile uint32_t*)0x4001101C;
-    volatile uint32_t* USART1_TDR = (volatile uint32_t*)0x40011028;
-
-    //force enable USART peripheral (UE = bit 0) and the transmitter (TE = bit 3)
-    *USART1_CR1 |= (1UL << 0) | (1UL << 3);
+    USART1->CR1 = USART_CR1_TE | USART_CR1_UE;
 
     //wait until Transmit Data Register is empty (bit 7)
-    while (!(*USART1_ISR & (1 << 7)));
+    while (!(USART1->ISR & USART_ISR_TXE)) {}
 
-    *USART1_TDR = c;
+    USART1->TDR = c;
 }
 
 void print_str(const char* str) {
@@ -89,18 +85,17 @@ extern "C" void SysTick_Handler() { //auto called every 1ms
 }
 
 //evaluates priorities and executes ready tasks
-void executeTaskLoop() {
-    uint32_t lastPrintedTick = 0xFFFFFFFF; //initialize to a dummy value
+[[noreturn]] void executeTaskLoop() {
+    // uint32_t lastPrintedTick = 0xFFFFFFFF;
 
     while (true) {
 
-        if (globalSystemTicks != lastPrintedTick) {
-            print_str("\n[Tick: ");
-            print_uint32(globalSystemTicks);
-            print_str("] ");
-            lastPrintedTick = globalSystemTicks;
-        }
-
+        // if (globalSystemTicks != lastPrintedTick) {
+        //     print_str("\n[Tick: ");
+        //     print_uint32(globalSystemTicks);
+        //     print_str("] ");
+        //     lastPrintedTick = globalSystemTicks;
+        // }
         int highestPriorityTaskIndex = -1;
         int highestPriorityValue = -1; //higher number = higher priority (1-12)
 
@@ -140,19 +135,11 @@ void taskMedium() { print_str("     🟡 Medium 500ms Task Running\n"); }
 void taskSlow() { print_str("           🛑 Slow 1000ms Task Running\n"); }
 
 extern "C" void start_drone_rtos() {
-    volatile uint32_t* RCC_AHB1ENR = (volatile uint32_t*)0x40023830;
-    volatile uint32_t* RCC_APB2ENR = (volatile uint32_t*)0x40023844;
-
-    *RCC_AHB1ENR |= (1UL << 0);  //Enable GPIOA Clock
-    *RCC_APB2ENR |= (1UL << 4);  //Enable USART1 Clock
-
-    volatile uint32_t* STK_CTRL  = (volatile uint32_t*)0xE000E010;
-    volatile uint32_t* STK_LOAD  = (volatile uint32_t*)0xE000E014;
-    volatile uint32_t* STK_VAL   = (volatile uint32_t*)0xE000E018;
-
-    *STK_LOAD = 215999UL; //1ms intervals at 216 MHz
-    *STK_VAL  = 0UL;
-    *STK_CTRL = 7UL;
+    SysTick->LOAD = 215999UL;
+    SysTick->VAL  = 0UL;
+    SysTick->CTRL = SysTick_CTRL_CLKSOURCE_Msk |
+                    SysTick_CTRL_TICKINT_Msk   |
+                    SysTick_CTRL_ENABLE_Msk;
 
     //Global interrupt enable
     __asm__ volatile("cpsie i" : : : "memory");
@@ -160,7 +147,6 @@ extern "C" void start_drone_rtos() {
     //register dummy tasks
     initializeNewTask(taskFast, 100, "FastTask");
     taskControlBlocks[activeTasks - 1].priority = 3;
-
     initializeNewTask(taskMedium, 500, "MedTask");
     taskControlBlocks[activeTasks - 1].priority = 6;
 
@@ -198,3 +184,4 @@ void dShotGeneration(){} //cleans up the DMA buffers for next cycle to esc
 
 //iswg (Independent Watchdog)
 [[noreturn]] void iswg(){while (true){} } // operates in a different part of the mcu, completely diff from the actual thread
+
