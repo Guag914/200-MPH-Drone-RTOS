@@ -3,12 +3,10 @@
 //
 
 #include "rtos.h"
-
 #include <chrono>
 
 #define MAX_TASKS 12 //update this later to a value as needed
 #define SYSTICK_BASE_ADDRESS (0xE000E010UL)
-
 
 static volatile uint32_t globalSystemTicks = 0;
 
@@ -21,11 +19,10 @@ void print_char(char c) {
     volatile uint32_t* USART1_ISR = (volatile uint32_t*)0x4001101C;
     volatile uint32_t* USART1_TDR = (volatile uint32_t*)0x40011028;
 
-    // Force enable the USART peripheral (UE = bit 0) and the Transmitter (TE = bit 3)
-    // Now that CubeMX configured the pins, this will successfully hook up the pipe
+    //force enable USART peripheral (UE = bit 0) and the transmitter (TE = bit 3)
     *USART1_CR1 |= (1UL << 0) | (1UL << 3);
 
-    // Wait until Transmit Data Register is empty (bit 7)
+    //wait until Transmit Data Register is empty (bit 7)
     while (!(*USART1_ISR & (1 << 7)));
 
     *USART1_TDR = c;
@@ -130,7 +127,7 @@ void executeTaskLoop() {
             task->taskState = TaskState::BLOCKED;
         }
         else {
-            //idle State: If nothing is ready, perform a brief no-op
+            //idle State: if nothing is ready, perform a brief no-op
             //to keep the CPU stable and clear for hardware interrupts
             __asm__ volatile("nop");
         }
@@ -138,31 +135,29 @@ void executeTaskLoop() {
 }
 
 //REMOVE THESE AFTER CONFIRMING TESTING
-void taskFast() { print_str("⚡ Fast 100ms Task Running\n"); }
-void taskMedium() { print_str("   🐢 Medium 500ms Task Running\n"); }
-void taskSlow() { print_str("      🛑 Slow 1000ms Task Running\n"); }
+void taskFast() { print_str("   🟢 Fast 100ms Task Running\n"); }
+void taskMedium() { print_str("     🟡 Medium 500ms Task Running\n"); }
+void taskSlow() { print_str("           🛑 Slow 1000ms Task Running\n"); }
 
 extern "C" void start_drone_rtos() {
-    // 1. Enable Clocks for GPIOA and USART1 peripherals in the RCC register block
     volatile uint32_t* RCC_AHB1ENR = (volatile uint32_t*)0x40023830;
     volatile uint32_t* RCC_APB2ENR = (volatile uint32_t*)0x40023844;
 
-    *RCC_AHB1ENR |= (1UL << 0);  // Enable GPIOA Clock
-    *RCC_APB2ENR |= (1UL << 4);  // Enable USART1 Clock
+    *RCC_AHB1ENR |= (1UL << 0);  //Enable GPIOA Clock
+    *RCC_APB2ENR |= (1UL << 4);  //Enable USART1 Clock
 
-    // 2. STM32F756 Core SysTick Register Map Configuration (216 MHz)
     volatile uint32_t* STK_CTRL  = (volatile uint32_t*)0xE000E010;
     volatile uint32_t* STK_LOAD  = (volatile uint32_t*)0xE000E014;
     volatile uint32_t* STK_VAL   = (volatile uint32_t*)0xE000E018;
 
-    *STK_LOAD = 215999UL; // 1ms intervals at 216 MHz
+    *STK_LOAD = 215999UL; //1ms intervals at 216 MHz
     *STK_VAL  = 0UL;
-    *STK_CTRL = 7UL;      // Enable Core Clock, Interupts, and Counter
+    *STK_CTRL = 7UL;
 
-    // 3. Global Interrupt Enable
+    //Global interrupt enable
     __asm__ volatile("cpsie i" : : : "memory");
 
-    // Register your dummy tasks
+    //register dummy tasks
     initializeNewTask(taskFast, 100, "FastTask");
     taskControlBlocks[activeTasks - 1].priority = 3;
 
@@ -172,10 +167,8 @@ extern "C" void start_drone_rtos() {
     initializeNewTask(taskSlow, 1000, "SlowTask");
     taskControlBlocks[activeTasks - 1].priority = 12;
 
-    // The peripheral is now awake and ready to transmit!
-    print_str("🎯 Booting Drone RTOS Scheduler Kernel...\n\n");
+    print_str("Booting Drone RTOS Scheduler Kernel...\n\n");
 
-    // Start your scheduler dispatcher
     executeTaskLoop();
 }
 

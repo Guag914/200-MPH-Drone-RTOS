@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-// This section is visible to BOTH main.c (C) and Main.cpp (C++)
+//this section is visible to BOTH main.c (C) and Main.cpp (C++)
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,8 +14,8 @@ void start_drone_rtos(void);
 }
 #endif
 
-// This section is completely HIDDEN from the C compiler (main.c)
-// It protects C++ exclusive keywords from breaking the build
+//this section is completely HIDDEN from the C compiler (main.c)
+//protects C++ exclusive keywords from breaking the build
 #ifdef __cplusplus
 
 #define MAX_TASKS 12
