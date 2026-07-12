@@ -7,7 +7,7 @@ machine LoadPlatformDescription @platforms/cpus/stm32f746.repl
 # 2. Open the dedicated serial analyzer graphic window
 showAnalyzer sysbus.usart1
 
-# 3. Load your ELF binary explicitly
+# 3. Load ELF binary explicitly
 sysbus LoadELF @cmake-build-debug-1/DRONE-RTOS.elf
 
 # 4. Bind the system vectors straight to Flash memory

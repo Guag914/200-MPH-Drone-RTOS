@@ -25,7 +25,7 @@ set(CMAKE_PROJECT_NAME DRONE-RTOS)
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 # Core project settings
-project(${CMAKE_PROJECT_NAME})
+project(${CMAKE_PROJECT_NAME} C CXX ASM)
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
 # Enable CMake support for ASM and C languages
@@ -34,6 +34,9 @@ enable_language(C CXX ASM)
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME}
         # Add user defined library search paths
+        src/PendSV_Handler.S
+        src/Main.cpp
+        src/rtos.h
 )
 
 # Add STM32CubeMX generated sources
