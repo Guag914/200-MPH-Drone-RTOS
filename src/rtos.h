@@ -9,10 +9,14 @@ extern "C" {
 #endif
 
 void start_drone_rtos(void);
+extern void print_str(const char* str);
 
 //expose global pointers cleanly to the rest of the system
 extern uint32_t** currTaskAddress;
 extern uint32_t** nextTaskAddress;
+
+extern volatile uint32_t globalSystemTicks;
+extern void yieldCurrentTask(void);
 
 #ifdef __cplusplus
 }
@@ -29,6 +33,11 @@ enum class TaskState : uint8_t {
     RUNNING = 2
 };
 
+enum class TaskType : uint8_t {
+    SCHEDULED,
+    INTERRUPT
+};
+
 struct TaskControlBlock {
     void (*taskCodeAddress)();
     alignas(8) uint32_t taskStack[1024];
@@ -38,6 +47,8 @@ struct TaskControlBlock {
     const char* taskName;
     uint8_t priority;
     TaskState taskState;
+
+    TaskType taskType;
 };
 
 bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const char* textName);

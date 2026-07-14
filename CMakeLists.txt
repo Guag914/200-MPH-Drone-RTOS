@@ -37,6 +37,10 @@ add_executable(${CMAKE_PROJECT_NAME}
         src/PendSV_Handler.S
         src/Main.cpp
         src/rtos.h
+        src/flight/flight_control.h
+        src/flight/Tasks.cpp
+        src/flight/BufferPopulation.cpp
+        src/flight/BufferPopulation.h
 )
 
 # Add STM32CubeMX generated sources

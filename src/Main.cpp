@@ -2,15 +2,15 @@
 // Created by Akshay Gillett on 7/9/26.
 //
 
-#include "rtos.h"
-#include <chrono>
+#include "./rtos.h"
 #include "stm32f7xx.h"
+#include "iostream"
+#include "random"
 
 #define MAX_TASKS 20 //update this later to a value as needed
 #define SYSTICK_BASE_ADDRESS (0xE000E010UL)
 
-static volatile uint32_t globalSystemTicks = 0;
-static volatile uint32_t interruptCounter = 0; //PURELY FOR TESTING - replace with actual usart port handlers for each task needed
+volatile uint32_t globalSystemTicks = 0;
 
 static TaskControlBlock taskControlBlocks[MAX_TASKS];
 static int activeTasks = 0;
@@ -19,14 +19,14 @@ static int currTaskIndex = 0;
 void print_char(char c) {
     // STM32F7 USART1 Base is 0x40011000.
     USART1->CR1 = USART_CR1_TE | USART_CR1_UE;
-
+    
     //wait until Transmit Data Register is empty (bit 7)
     while (!(USART1->ISR & USART_ISR_TXE)) {}
 
     USART1->TDR = c;
 }
 
-void print_str(const char* str) {
+extern void print_str(const char* str) {
     while (*str) {
         print_char(*str++);
     }
@@ -49,14 +49,18 @@ void print_uint32(uint32_t value) {
     print_str(&buffer[i]);
 }
 
-bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const char* textName) {
+unsigned int seed = 12345;
+unsigned int randomNumber() { seed = (1103515245 * seed + 12345) % 2147483648;  return (seed%1000)+1; }
+
+bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const char* textName) { //set the default to scheduled
     if (activeTasks >= MAX_TASKS) { return false; }
 
     taskControlBlocks[activeTasks].taskCodeAddress = functionAddress;
     taskControlBlocks[activeTasks].executionPeriod = timePeriod;
     taskControlBlocks[activeTasks].taskName = textName;
-
     taskControlBlocks[activeTasks].taskState = TaskState::BLOCKED;
+
+    taskControlBlocks[activeTasks].taskType = TaskType::SCHEDULED;
 
     //point to the very end of the 1024-word array idx = 1023
     taskControlBlocks[activeTasks].topOfStack = &taskControlBlocks[activeTasks].taskStack[1023];
@@ -72,6 +76,28 @@ bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const cha
     taskControlBlocks[activeTasks].topOfStack[15] = 0x01000000;
 
     //initialize time stamp with custom function
+    taskControlBlocks[activeTasks].lastRunTime = globalSystemTicks;
+
+    activeTasks++;
+    return true;
+}
+
+//overload the parameters for an interrupt because it doesn't have an execution period
+bool initializeNewTask(void (*functionAddress)(), const char* textName) { //set the default to scheduled
+    if (activeTasks >= MAX_TASKS) { return false; }
+
+    taskControlBlocks[activeTasks].taskCodeAddress = functionAddress;
+    taskControlBlocks[activeTasks].taskName = textName;
+    taskControlBlocks[activeTasks].taskState = TaskState::BLOCKED;
+
+    taskControlBlocks[activeTasks].taskType = TaskType::INTERRUPT;
+
+    taskControlBlocks[activeTasks].topOfStack = &taskControlBlocks[activeTasks].taskStack[1023];
+    taskControlBlocks[activeTasks].topOfStack -= 16;
+    for (int i = 0; i < 14; i++) { taskControlBlocks[activeTasks].topOfStack[i] = 0; }
+    taskControlBlocks[activeTasks].topOfStack[14] = reinterpret_cast<uint32_t>(functionAddress);
+    taskControlBlocks[activeTasks].topOfStack[15] = 0x01000000;
+
     taskControlBlocks[activeTasks].lastRunTime = globalSystemTicks;
 
     activeTasks++;
@@ -97,13 +123,16 @@ extern "C" void yieldCurrentTask() {
 }
 
 extern "C" void decideNextInterruptTask(TaskControlBlock* interruptTask) {
-    // Save the state of the scheduled runner before switching
-    currTaskAddress = &(taskControlBlocks[currTaskIndex].topOfStack);
+    //set the current running task to ready
+    if (taskControlBlocks[currTaskIndex].taskState == TaskState::RUNNING) {
+        taskControlBlocks[currTaskIndex].taskState = TaskState::READY;
+    }
 
-    interruptTask->taskState = TaskState::RUNNING;
+    //update addresses to point to next and current tasks
+    currTaskAddress = &(taskControlBlocks[currTaskIndex].topOfStack);
     nextTaskAddress = &(interruptTask->topOfStack);
 
-    //find its index in the array to update tracking
+    //update current task index to the interrupt task
     for (int i = 0; i < activeTasks; i++) {
         if (&taskControlBlocks[i] == interruptTask) {
             currTaskIndex = i;
@@ -111,7 +140,10 @@ extern "C" void decideNextInterruptTask(TaskControlBlock* interruptTask) {
         }
     }
 
-    SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
+    //set the next task to running
+    interruptTask->taskState = TaskState::RUNNING;
+
+    SCB->ICSR = SCB_ICSR_PENDSVSET_Msk; //trigger pendsv to switch
 }
 
 extern "C" void decideNextScheduledTask() {
@@ -128,23 +160,30 @@ extern "C" void decideNextScheduledTask() {
     }
 
     if (highestPriorityTaskIndex != -1) {
-        TaskControlBlock* task = &taskControlBlocks[highestPriorityTaskIndex];
 
-        task->taskState = TaskState::RUNNING;
-        task->taskCodeAddress();
+        const int nextTaskIdx = highestPriorityTaskIndex;
 
-        task->lastRunTime = globalSystemTicks;
-        task->taskState = TaskState::BLOCKED;
+        currTaskAddress = &(taskControlBlocks[currTaskIndex].topOfStack);
+        nextTaskAddress = &(taskControlBlocks[nextTaskIdx].topOfStack);
+
+        taskControlBlocks[currTaskIndex].taskState = TaskState::READY; //set it to running so it restores where it left off
+        currTaskIndex = nextTaskIdx;
+        taskControlBlocks[currTaskIndex].taskState = TaskState::RUNNING;
+        taskControlBlocks[currTaskIndex].lastRunTime = globalSystemTicks;
+
+        SCB->ICSR = SCB_ICSR_PENDSVSET_Msk; //trigger pendsv
+        __ISB(); //forces instructions from memory instantly - refresh
     }
 }
 
+static volatile uint32_t verificationCounter = 0;
 
 extern "C" void SysTick_Handler() {
     globalSystemTicks++;
 
     for (int i = 0; i < activeTasks; i++) {
 
-        if (taskControlBlocks[i].executionPeriod == 0) { continue;}
+        if (taskControlBlocks[i].taskType == TaskType::INTERRUPT) { continue; } //use instead of a 0 ms execution period
 
         if (taskControlBlocks[i].taskState == TaskState::BLOCKED) {
             if (globalSystemTicks - taskControlBlocks[i].lastRunTime >= taskControlBlocks[i].executionPeriod) {
@@ -153,15 +192,7 @@ extern "C" void SysTick_Handler() {
         }
     }
 
-    interruptCounter++;
-    if (interruptCounter >= 10000) { //every 10 seconds
-        interruptCounter = 0;
-
-        //ensure the interrupt task isn't already running before calling it
-        if (taskControlBlocks[1].taskState == TaskState::BLOCKED) {
-            decideNextInterruptTask(&taskControlBlocks[1]);
-        }
-    }
+     if (randomNumber() == 10) { decideNextInterruptTask(&taskControlBlocks[2]); }
 }
 
 //evaluates priorities and executes ready tasks
@@ -175,20 +206,35 @@ extern "C" void SysTick_Handler() {
 
 //REMOVE THESE AFTER CONFIRMING TESTING
 //scheduled tasks
-void taskFast()   { print_str("F"); } // print a single to eliminate lag in console
-void taskMedium() { print_str("M"); }
-void taskSlow()   { print_str("S"); }
+// Global or file-scope variables to watch
+[[noreturn]] void taskCounter() {
+    while (true) {
+        print_str("Count: ");
+        print_uint32(verificationCounter);
+        print_str("\n");
+
+        // Increment right at the end of the step
+        verificationCounter++;
+
+        // Burn a tiny bit of time
+        for (volatile uint32_t i = 0; i < 500000UL; i++) { __asm__ volatile("nop"); }
+    }
+}
 
 [[noreturn]] void taskInterrupt() {
     while (true) {
-        print_str("\n[INT START]\n");
+        print_str("\n--- [INTERRUPT PREEMPTION START] ---\n");
+        print_str("Captured Counter State: ");
+        print_uint32(verificationCounter);
+        print_str("\n");
 
-        for (volatile uint32_t i = 0; i < 20000000UL; i++) {
-            __asm__ volatile("nop");
-        }
+        // Burn significant CPU time to simulate a heavy processing cycle
+        // This forces the background task to sit in the READY queue completely paused
+        for (volatile uint32_t i = 0; i < 15000000UL; i++) { __asm__ volatile("nop"); }
 
-        print_str("[INT END]\n");
-        yieldCurrentTask();
+        print_str("--- [INTERRUPT PREEMPTION END - RESTORING] ---\n\n");
+
+        yieldCurrentTask(); //sawp back
     }
 }
 
@@ -206,31 +252,28 @@ extern "C" void start_drone_rtos() {
     NVIC_SetPriority(PendSV_IRQn, 0xFF);
 
     //register executeTaskLoop as a true rtos task
-    initializeNewTask(executeTaskLoop, 0, "ScheduledZoneRunner");
+    initializeNewTask(executeTaskLoop, "ScheduledZoneRunner");
     taskControlBlocks[0].priority = 0; //lowest priority background worker
     taskControlBlocks[0].taskState = TaskState::RUNNING;
 
     currTaskIndex = 0;
     currTaskAddress = &(taskControlBlocks[0].topOfStack);
 
-    //dummy interrupt tasks
-    initializeNewTask(taskInterrupt, 0, "Interrupt Task"); //interrupt tasks MUST be initialized with 0
-    taskControlBlocks[activeTasks - 1].priority = 20; //interrupt tasks MUST have highest priority
+    /*===--- START TASK ENTRY ---===*/
 
-    //dummy scheduled tasks
-    initializeNewTask(taskFast, 10, "FastTask");
-    taskControlBlocks[activeTasks - 1].priority = 1;
+    initializeNewTask(taskCounter, 0, "CounterTask");
+    taskControlBlocks[activeTasks - 1].priority = 1; //low priority
+    taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
-    initializeNewTask(taskMedium, 500, "MedTask");
-    taskControlBlocks[activeTasks - 1].priority = 2;
+    initializeNewTask(taskInterrupt, "InterruptTask"); //use overloaded function to init the task to interrupt one
+    taskControlBlocks[activeTasks - 1].priority = 20; //high priority
+    taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
 
-    initializeNewTask(taskSlow, 1000, "SlowTask");
-    taskControlBlocks[activeTasks - 1].priority = 3;
+    /*===--- END TASK ENTRY ---===*/
 
-    //set the CPU's default PSP stack to the fast task's stack to start safely
-    __set_PSP(reinterpret_cast<uint32_t>(taskControlBlocks[0].topOfStack));
+    __set_PSP(reinterpret_cast<uint32_t>(taskControlBlocks[0].topOfStack)); //set the CPU's default PSP stack to the fast task's stack to start safely
     __set_CONTROL(0x02);
-    __ISB(); // Instruction Synchronization Barrier to apply the change instantly
+    __ISB();
 
     print_str("Booting Drone RTOS Scheduler Kernel...\n\n");
 
@@ -239,28 +282,32 @@ extern "C" void start_drone_rtos() {
 
 //Task code: Instead of returning a value, tasks pass data to each other using global/file-scope thread-safe buffers, lock-free queues, or shared state structs.
 
-//Interrupt zone:
-void readIMUDataRegisters(){} //reads imu and does calculations
-void stateEstimation(){} //low level pass filters (e.g. kalman filter), and updates structs used for calculations
-void flightLoop(){} //pid and mixer calculations
-void crsfParsing(){} //parses incoming radio signals
-void radioLinkFailSafe(){} //instant disarm if radio link drops for more than 200 ms
-void dShotGeneration(){} //cleans up the DMA buffers for next cycle to esc
+// Interrupt zone:
+ // void readIMUDataRegisters(){} //reads imu and does calculations
+ void stateEstimation(){} //low level pass filters (e.g. kalman filter), and updates structs used for calculations
+ void flightLoop(){} //pid and mixer calculations
+ // void crsfParsing(){} //parses incoming radio signals
+ // void radioLinkFailSafe(){} //instant disarm if radio link drops for more than 200 ms
+ void dShotGeneration(){} //cleans up the DMA buffers for next cycle to esc
+ void flightStateMachine() {} //tracks states such as DISARMED, FAILSAFE etc.
 
-//Scheduled zone: Must use while (true) loops
-//high priority
-[[noreturn]] void lowLevelFailSafe(){ while (true){} } //for non emergencies e.g. low battery or gps ping low
+ //Scheduled zone: Must use while (true) loops
+ //high priority
 
-//medium priority
-[[noreturn]] void telemetryTX(){ while (true){} } //logs telemetry on the radio
-[[noreturn]] void osdUpdate(){ while (true){} } //updates osd values for the telemetry in the video footage
-[[noreturn]] void gpsParser(){ while (true){} } //updates location and transmits
+ // [[noreturn]] void lowLevelFailSafe(){ while (true){} } //for non emergencies e.g. low battery or gps ping low
 
-//low priority
-[[noreturn]] void blackboxLogging(){ while (true){} } //most likely remove as we have no onboard storage
-[[noreturn]] void updatePeripherals(){ while (true){} } //controls leds, beeper, and smartaudio for the vtx
-[[noreturn]] void usbCLI(){ while (true){} } //handles connections via the usbc port e.g. cli adjustments, pid tuning, and config flashing etc.
+ //medium priority
+ [[noreturn]] void telemetryTX(){ while (true){} } //logs telemetry on the radio
+ [[noreturn]] void osdUpdate(){ while (true){} } //updates osd values for the telemetry in the video footage
+ [[noreturn]] void gpsParser(){ while (true){} } //updates location and transmits
 
-//iswg (Independent Watchdog)
-[[noreturn]] void iswg(){while (true){} } // operates in a different part of the mcu, completely diff from the actual thread
+ //low priority
+ [[noreturn]] void blackboxLogging(){ while (true){} } //most likely remove as we have no onboard storage
+ [[noreturn]] void updatePeripherals(){ while (true){} } //controls leds, beeper, and smartaudio for the vtx
+ [[noreturn]] void usbCLI(){ while (true){} } //handles connections via the usbc port e.g. cli adjustments, pid tuning, and config flashing etc.
 
+ //iswg (Independent Watchdog)
+ [[noreturn]] void iswg(){while (true){} } // operates in a different part of the mcu, completely diff from the actual thread
+
+ //initilization
+ // void sensorCalibration() {} //reset sensor bias for accurate calculations
