@@ -47,6 +47,48 @@ During the simulation, a low-priority background task continuously increments a 
      run.bat
      
 4. In the primary **Renode** window, type start to being the simulation, and quit to stop the simulation.
+5. **Note:** If you want to code your own custom tasks via `User_Tasks/user_tasks.cpp`, you must install the arm-none-eabi-gcc, and arm-none-eabi-g++ compilers.
+   * **Windows**: 
+     * Go to [https://developer.arm.com/downloads/-/gnu-rm](https://developer.arm.com/downloads/-/gnu-rm) and download the exe
+     * Run the installer, and make sure to check the box that says **Add path to envirnment variable**
+     * Test the installation with: 
+     
+       ```cmd
+       arm-none-eabi-gcc --version
+   * **MacOS**:
+     * Install it with:
+       ```bash
+         brew install armmbed/formulae/arm-none-eabi-gcc
+     
+     * Test the installation with:
+      
+       ```bash
+         arm-none-eabi-gcc --version
+       
+   * **Linux**:
+       * Install it with:
+         ```bash
+           sudo apt update
+           sudo apt install gcc-arm-none-eabi
+       * Test the installation with:
+
+         ```bash
+           arm-none-eabi-gcc --version
+
+###  Compiling Your Custom Tasks
+Once you have modified `User_Tasks/user_tasks.cpp` with your own loops, you must recompile the binary so the simulator can run your updated code.
+
+1. Ensure you have **CMake** and **Ninja** installed on your system.
+2. Run the build script from the root of the project to recompile:
+    * **Mac / Linux**:
+      ```bash
+      chmod +x build.sh
+      ./build.sh
+      ```
+    * **Windows**:
+      ```cmd
+      build.bat
+      ```
 
 ---
 
