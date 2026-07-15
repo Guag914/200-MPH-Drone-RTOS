@@ -2,7 +2,7 @@
 // Created by Akshay Gillett on 7/9/26.
 //
 
-#include "./rtos.h"
+#include "rtos.h"
 #include "stm32f7xx.h"
 #include "iostream"
 #include "random"

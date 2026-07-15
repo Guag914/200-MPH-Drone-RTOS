@@ -3,7 +3,7 @@
 //
 
 #include "./flight_control.h"
-#include "../rtos.h"
+#include "../rtos/rtos.h"
 #include "./BufferPopulation.h"
 #include "stm32f7xx.h"
 

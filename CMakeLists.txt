@@ -34,9 +34,9 @@ enable_language(C CXX ASM)
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME}
         # Add user defined library search paths
-        src/PendSV_Handler.S
-        src/Main.cpp
-        src/rtos.h
+        src/rtos/PendSV_Handler.S
+        src/rtos/Main.cpp
+        src/rtos/rtos.h
         src/flight/flight_control.h
         src/flight/Tasks.cpp
         src/flight/BufferPopulation.cpp
@@ -54,7 +54,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
-        src/Main.cpp
+        src/rtos/Main.cpp
 )
 
 # Add include paths
