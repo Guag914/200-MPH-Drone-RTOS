@@ -59,6 +59,7 @@ extern void yieldCurrentTask(void);
 extern TaskControlBlock taskControlBlocks[MAX_TASKS];
 extern int activeTasks;
 extern "C" void decideNextInterruptTask(TaskControlBlock* interruptTask);
+extern "C" void print_uint32(uint32_t value);
 extern "C" { // Re-open extern "C"
 #endif
 

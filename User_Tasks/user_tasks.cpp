@@ -12,9 +12,16 @@
  * then call `yieldCurrentTask()` to hand control back to the scheduler.
  */
 
+// The example code uses a uint32 variable to demonstrate the task saving ability.
+static volatile uint32_t verificationCounter = 0;
+
 [[noreturn]] void exampleScheduledTask() {
     while (true) {
-        print_str("Example Task Running\n");
+        print_str("Count: ");
+        print_uint32(verificationCounter++);
+        print_str("\n");
+
+        // Yield control back to the scheduler via PendSV
         yieldCurrentTask();
     }
 }
@@ -31,17 +38,20 @@
 
 [[noreturn]] void exampleInterruptTask() {
     while (true) {
-        print_str("\n\n[INTERRUPT TASK RUNNING]\n\n");
+        print_str("--- [INTERRUPT PREEMPTION START] ---\n");
+        print_str("Captured Counter State: ");
+        print_uint32(verificationCounter); //Even though the previous task was interrupted, it will restore from where it left off
+        print_str("\n");
 
-        // Burns CPU time for visual testing so you can see the preemption in the terminal.
-        for (volatile uint32_t i = 0; i < 15000000UL; i++) {
+        for (volatile uint32_t i = 0; i < 15000000UL; i++) { // Breifly pause for visual testing
             __asm__ volatile("nop");
         }
+        print_str("--- [INTERRUPT PREEMPTION END - RESTORING] ---\n");
 
-        // Hand CPU control back to the cooperative scheduler zone and restore context
         yieldCurrentTask();
     }
 }
+
 
 /*====== END USER TASK ENTRY ======*/
 

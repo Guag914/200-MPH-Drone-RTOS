@@ -31,7 +31,7 @@ extern void print_str(const char* str) {
     }
 }
 
-void print_uint32(uint32_t value) {
+extern "C" void print_uint32(uint32_t value) {
     char buffer[11]; // max "4294967295" + null terminator
     int i = 10;
     buffer[i] = '\0';
