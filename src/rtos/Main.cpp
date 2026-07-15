@@ -4,16 +4,15 @@
 
 #include "rtos.h"
 #include "stm32f7xx.h"
-#include "iostream"
-#include "random"
+#include "../../User_Tasks/user_tasks.h"
 
 #define MAX_TASKS 20 //update this later to a value as needed
 #define SYSTICK_BASE_ADDRESS (0xE000E010UL)
 
 volatile uint32_t globalSystemTicks = 0;
 
-static TaskControlBlock taskControlBlocks[MAX_TASKS];
-static int activeTasks = 0;
+TaskControlBlock taskControlBlocks[MAX_TASKS];
+int activeTasks = 0;
 static int currTaskIndex = 0;
 
 void print_char(char c) {
@@ -48,9 +47,6 @@ void print_uint32(uint32_t value) {
 
     print_str(&buffer[i]);
 }
-
-unsigned int seed = 12345;
-unsigned int randomNumber() { seed = (1103515245 * seed + 12345) % 2147483648;  return (seed%1000)+1; }
 
 bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const char* textName) { //set the default to scheduled
     if (activeTasks >= MAX_TASKS) { return false; }
@@ -192,7 +188,7 @@ extern "C" void SysTick_Handler() {
         }
     }
 
-     if (randomNumber() == 10) { decideNextInterruptTask(&taskControlBlocks[2]); }
+    callUserInterruptTasks();
 }
 
 //evaluates priorities and executes ready tasks
@@ -204,39 +200,6 @@ extern "C" void SysTick_Handler() {
     }
 }
 
-//REMOVE THESE AFTER CONFIRMING TESTING
-//scheduled tasks
-// Global or file-scope variables to watch
-[[noreturn]] void taskCounter() {
-    while (true) {
-        print_str("Count: ");
-        print_uint32(verificationCounter);
-        print_str("\n");
-
-        // Increment right at the end of the step
-        verificationCounter++;
-
-        // Burn a tiny bit of time
-        for (volatile uint32_t i = 0; i < 500000UL; i++) { __asm__ volatile("nop"); }
-    }
-}
-
-[[noreturn]] void taskInterrupt() {
-    while (true) {
-        print_str("\n--- [INTERRUPT PREEMPTION START] ---\n");
-        print_str("Captured Counter State: ");
-        print_uint32(verificationCounter);
-        print_str("\n");
-
-        // Burn significant CPU time to simulate a heavy processing cycle
-        // This forces the background task to sit in the READY queue completely paused
-        for (volatile uint32_t i = 0; i < 15000000UL; i++) { __asm__ volatile("nop"); }
-
-        print_str("--- [INTERRUPT PREEMPTION END - RESTORING] ---\n\n");
-
-        yieldCurrentTask(); //sawp back
-    }
-}
 
 extern "C" void start_drone_rtos() {
     SysTick->LOAD = 215999UL;
@@ -261,13 +224,7 @@ extern "C" void start_drone_rtos() {
 
     /*===--- START TASK ENTRY ---===*/
 
-    initializeNewTask(taskCounter, 0, "CounterTask");
-    taskControlBlocks[activeTasks - 1].priority = 1; //low priority
-    taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
-
-    initializeNewTask(taskInterrupt, "InterruptTask"); //use overloaded function to init the task to interrupt one
-    taskControlBlocks[activeTasks - 1].priority = 20; //high priority
-    taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
+    registerUserTasks();
 
     /*===--- END TASK ENTRY ---===*/
 

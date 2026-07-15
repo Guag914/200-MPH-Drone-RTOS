@@ -3,25 +3,6 @@
 
 #include <stdint.h>
 
-//this section is visible to BOTH core/src/main.c (C) and src/Main.cpp (C++)
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-void start_drone_rtos(void);
-extern void print_str(const char* str);
-
-//expose global pointers cleanly to the rest of the system
-extern uint32_t** currTaskAddress;
-extern uint32_t** nextTaskAddress;
-
-extern volatile uint32_t globalSystemTicks;
-extern void yieldCurrentTask(void);
-
-#ifdef __cplusplus
-}
-#endif
-
 //this section is completely HIDDEN from the C compiler (main.c)
 #ifdef __cplusplus
 
@@ -52,8 +33,37 @@ struct TaskControlBlock {
 };
 
 bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const char* textName);
+bool initializeNewTask(void (*functionAddress)(), const char* textName);
+
 [[noreturn]] void executeTaskLoop();
 
 #endif // __cplusplus
+
+//this section is visible to BOTH core/src/main.c (C) and src/Main.cpp (C++)
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void start_drone_rtos(void);
+extern void print_str(const char* str);
+
+extern uint32_t** currTaskAddress;
+extern uint32_t** nextTaskAddress;
+
+extern volatile uint32_t globalSystemTicks;
+extern void yieldCurrentTask(void);
+
+//hide from c compiler but public
+#ifdef __cplusplus
+} // Close extern "C" briefly to allow C++ scope
+extern TaskControlBlock taskControlBlocks[MAX_TASKS];
+extern int activeTasks;
+extern "C" void decideNextInterruptTask(TaskControlBlock* interruptTask);
+extern "C" { // Re-open extern "C"
+#endif
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // DRONE_RTOS_H

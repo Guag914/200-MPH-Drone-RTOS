@@ -41,6 +41,8 @@ add_executable(${CMAKE_PROJECT_NAME}
         src/flight/Tasks.cpp
         src/flight/BufferPopulation.cpp
         src/flight/BufferPopulation.h
+        User_Tasks/user_tasks.cpp
+        User_Tasks/user_tasks.h
 )
 
 # Add STM32CubeMX generated sources
