@@ -4,31 +4,36 @@
 
 #include "BufferPopulation.h"
 #include "flight_control.h" //gives access to boardconfig
+#include "../rtos/rtos.h"
 
 #define HW_UART_BUFFER_SIZE 64
 
+static uint8_t imuRawBuffer[12];
+
+void startIMU_DMARead() {
+    currentBoardConfig.imu_cs_port->BSRR = static_cast<uint32_t>(currentBoardConfig.imu_cs_pin) << 16; //pull pin low to start read
+
+    DMA2->LIFCR = DMA_LIFCR_CTCIF0 | DMA_LIFCR_CHTIF0 | DMA_LIFCR_CTEIF0 | DMA_LIFCR_CDMEIF0 | DMA_LIFCR_CFEIF0; //clear all other flags
+
+    DMA2_Stream0->NDTR = 12;
+    DMA2_Stream0->M0AR = reinterpret_cast<uint32_t>(imuRawBuffer); //where the buffer starts
+
+    DMA2_Stream0->CR |= DMA_SxCR_TCIE | DMA_SxCR_EN;
+    currentBoardConfig.imu_spi->CR2 |= SPI_CR2_RXDMAEN; //points SPI to trigger through DMA
+}
+
 IMURawPacket populateIMUBuffer() {
-    IMURawPacket localContainer = {0};
-    constexpr uint8_t startRegister = 0x0C; //BMI270 starting address
+    startIMU_DMARead(); //start dma read
+    yieldCurrentTask(); //yield so there is no wait
 
-    currentBoardConfig.imu_cs_port->BSRR = static_cast<uint32_t>(currentBoardConfig.imu_cs_pin) << 16;
+    currentBoardConfig.imu_cs_port->BSRR = currentBoardConfig.imu_cs_pin; //pull high to end the SPI transaction
 
-    //transmit starting address with read flag applied
-    currentBoardConfig.imu_spi->DR = startRegister | 0x80; //write dummy values to update the register
-    while (!(currentBoardConfig.imu_spi->SR & SPI_SR_TXE)) {}
-    while (currentBoardConfig.imu_spi->SR & SPI_SR_BSY) {}
-    (void)currentBoardConfig.imu_spi->DR; //clear out corrupted values
-
-    //populate locally
-    for (unsigned char & byte : localContainer.bytes) {
-        currentBoardConfig.imu_spi->DR = 0x00; //write to update register
-        while (!(currentBoardConfig.imu_spi->SR & SPI_SR_RXNE)) {} //wait for it to populate
-        byte = currentBoardConfig.imu_spi->DR; //get the actual bit
+    IMURawPacket rawPacket;
+    for (int i = 0; i < 12; i++) {
+        rawPacket.bytes[i] = imuRawBuffer[i];
     }
 
-    currentBoardConfig.imu_cs_port->BSRR = currentBoardConfig.imu_cs_pin;
-
-    return localContainer;
+    return rawPacket; //return packet to reader
 }
 
 CRSFPacket populateCRSFBuffer() {
@@ -42,6 +47,7 @@ CRSFPacket populateCRSFBuffer() {
 
     while (readIndex != headIndex && bytesCopied < 26) { //if 26 bits (1 elrs packet) has been reached, AND we are reading at the point where the hardware is writing
         extern uint8_t crsfRingBuffer[HW_UART_BUFFER_SIZE];
+        __disable_irq();
         localContainer.bytes[bytesCopied] = crsfRingBuffer[readIndex];
         bytesCopied++;
 
@@ -49,7 +55,10 @@ CRSFPacket populateCRSFBuffer() {
         if (readIndex >= HW_UART_BUFFER_SIZE) {
             readIndex = 0;
         }
+        __enable_irq();
     }
+
+
 
     return localContainer;
 }

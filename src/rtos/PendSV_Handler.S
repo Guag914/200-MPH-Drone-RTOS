@@ -12,6 +12,7 @@
 PendSV_Handler:
     CPSID I
     MRS R0, PSP
+    VSTMDB R0!, {S16-S31}
     STMDB R0!, {R4-R11}
 
     LDR R1, =currTaskAddress
@@ -23,6 +24,7 @@ PendSV_Handler:
     LDR R0, [R1]
 
     LDMIA R0!, {R4-R11}
+    VLDMIA R0!, {S16-S31}
     MSR PSP, R0
     CPSIE I
     BX LR

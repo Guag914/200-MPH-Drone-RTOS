@@ -15,6 +15,9 @@ TaskControlBlock taskControlBlocks[MAX_TASKS];
 int activeTasks = 0;
 static int currTaskIndex = 0;
 
+static int preemptStack[MAX_TASKS];
+static int preemptDepth = 0;
+
 void print_char(char c) {
     // STM32F7 USART1 Base is 0x40011000.
     USART1->CR1 = USART_CR1_TE | USART_CR1_UE;
@@ -60,16 +63,17 @@ bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const cha
 
     //point to the very end of the 1024-word array idx = 1023
     taskControlBlocks[activeTasks].topOfStack = &taskControlBlocks[activeTasks].taskStack[1023];
+    taskControlBlocks[activeTasks].taskStack[0] = 0xDEADBEEF;
 
     //back up 16 slots to leave room for the context switcher's registers
-    taskControlBlocks[activeTasks].topOfStack -= 16;
+    taskControlBlocks[activeTasks].topOfStack -= 32;
 
     //clear the slots for R0-R12 and LR (slots 0 to 13)
-    for (int i = 0; i < 14; i++) { taskControlBlocks[activeTasks].topOfStack[i] = 0; }
+    for (int i = 0; i < 30; i++) { taskControlBlocks[activeTasks].topOfStack[i] = 0; }
 
     //set the PC slot (14) to the function address and xPSR slot (15) to Thumb mode
-    taskControlBlocks[activeTasks].topOfStack[14] = reinterpret_cast<uint32_t>(functionAddress);
-    taskControlBlocks[activeTasks].topOfStack[15] = 0x01000000;
+    taskControlBlocks[activeTasks].topOfStack[30] = reinterpret_cast<uint32_t>(functionAddress);
+    taskControlBlocks[activeTasks].topOfStack[31] = 0x01000000;
 
     //initialize time stamp with custom function
     taskControlBlocks[activeTasks].lastRunTime = globalSystemTicks;
@@ -89,10 +93,13 @@ bool initializeNewTask(void (*functionAddress)(), const char* textName) { //set 
     taskControlBlocks[activeTasks].taskType = TaskType::INTERRUPT;
 
     taskControlBlocks[activeTasks].topOfStack = &taskControlBlocks[activeTasks].taskStack[1023];
-    taskControlBlocks[activeTasks].topOfStack -= 16;
-    for (int i = 0; i < 14; i++) { taskControlBlocks[activeTasks].topOfStack[i] = 0; }
-    taskControlBlocks[activeTasks].topOfStack[14] = reinterpret_cast<uint32_t>(functionAddress);
-    taskControlBlocks[activeTasks].topOfStack[15] = 0x01000000;
+    taskControlBlocks[activeTasks].taskStack[0] = 0xDEADBEEF;
+    taskControlBlocks[activeTasks].topOfStack -= 32;
+
+
+    for (int i = 0; i < 30; i++) { taskControlBlocks[activeTasks].topOfStack[i] = 0; }
+    taskControlBlocks[activeTasks].topOfStack[30] = reinterpret_cast<uint32_t>(functionAddress);
+    taskControlBlocks[activeTasks].topOfStack[31] = 0x01000000;
 
     taskControlBlocks[activeTasks].lastRunTime = globalSystemTicks;
 
@@ -104,8 +111,12 @@ extern "C" uint32_t** currTaskAddress = nullptr;
 extern "C" uint32_t** nextTaskAddress = nullptr;
 
 extern "C" void yieldCurrentTask() {
+    __disable_irq();
+
     taskControlBlocks[currTaskIndex].taskState = TaskState::BLOCKED; //block the current interrupt and go back to the scheduler process
-    int nextTaskIdx = 0;
+
+    //dynamically switch to the last task
+    int nextTaskIdx = (preemptDepth > 0) ? preemptStack[--preemptDepth] : 0; //pops off the top item in the stack
 
     currTaskAddress = &(taskControlBlocks[currTaskIndex].topOfStack);
     nextTaskAddress = &(taskControlBlocks[nextTaskIdx].topOfStack);
@@ -115,10 +126,19 @@ extern "C" void yieldCurrentTask() {
 
     //fire the context switch back to the scheduled loop using pendSV
     SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
+
+    __enable_irq();
     __ISB();
 }
 
 extern "C" void decideNextInterruptTask(TaskControlBlock* interruptTask) {
+    __disable_irq(); //guards against pointers being overrwritten by simultaneous interrupts
+
+    if (interruptTask->priority <= taskControlBlocks[currTaskIndex].priority) { __enable_irq(); return; } //in case the interrupt has a lower priority than a scheduled task
+
+    //append to the LIFO stack to have a preemt queue if multiple interrupts activate at once
+    preemptStack[preemptDepth++] = currTaskIndex; //saves current task running (not the interrupt one)
+
     //set the current running task to ready
     if (taskControlBlocks[currTaskIndex].taskState == TaskState::RUNNING) {
         taskControlBlocks[currTaskIndex].taskState = TaskState::READY;
@@ -140,9 +160,13 @@ extern "C" void decideNextInterruptTask(TaskControlBlock* interruptTask) {
     interruptTask->taskState = TaskState::RUNNING;
 
     SCB->ICSR = SCB_ICSR_PENDSVSET_Msk; //trigger pendsv to switch
+
+    __enable_irq();
 }
 
 extern "C" void decideNextScheduledTask() {
+    __disable_irq();
+
     int highestPriorityTaskIndex = -1;
     int highestPriorityValue = -1;
 
@@ -168,16 +192,27 @@ extern "C" void decideNextScheduledTask() {
         taskControlBlocks[currTaskIndex].lastRunTime = globalSystemTicks;
 
         SCB->ICSR = SCB_ICSR_PENDSVSET_Msk; //trigger pendsv
+
+        __enable_irq(); //disable lock
         __ISB(); //forces instructions from memory instantly - refresh
     }
+
+    __enable_irq();
 }
 
-static volatile uint32_t verificationCounter = 0;
 
 extern "C" void SysTick_Handler() {
     globalSystemTicks++;
 
     for (int i = 0; i < activeTasks; i++) {
+
+        if (taskControlBlocks[i].taskStack[0] != 0xDEADBEEF) {
+            print_str("STACK OVERFLOW DETECTED: ");
+            print_str(taskControlBlocks[i].taskName);
+            print_str("\n");
+            // ReSharper disable once CppDFAEndlessLoop
+            while (true) {} //halt the drone (will crash) so add handling later
+        }
 
         if (taskControlBlocks[i].taskType == TaskType::INTERRUPT) { continue; } //use instead of a 0 ms execution period
 

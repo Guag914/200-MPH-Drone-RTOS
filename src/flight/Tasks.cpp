@@ -13,6 +13,7 @@ void readIMUDataRegisters() {
     //function to populate the 14 registers starting at the start address
     IMURawPacket rawIMUBuffer = populateIMUBuffer();
 
+    __disable_irq();
     //reassemble registers into signed 16-bit integers
     const int16_t rawAccelX = (rawIMUBuffer.bytes[1] << 8) | rawIMUBuffer.bytes[0];
     const int16_t rawAccelY = (rawIMUBuffer.bytes[3] << 8) | rawIMUBuffer.bytes[2];
@@ -22,7 +23,9 @@ void readIMUDataRegisters() {
     const int16_t rawGyroX = (rawIMUBuffer.bytes[7] << 8) | rawIMUBuffer.bytes[6];
     const int16_t rawGyroY = (rawIMUBuffer.bytes[9] << 8) | rawIMUBuffer.bytes[8];
     const int16_t rawGyroZ = (rawIMUBuffer.bytes[11] << 8) | rawIMUBuffer.bytes[10];
+    __enable_irq();
 
+    __disable_irq();
     //scale using floats for precice rotation
     drone.accelRaw[0] = static_cast<float>(rawAccelX) / 2048.0f;
     drone.accelRaw[1] = static_cast<float>(rawAccelY) / 2048.0f;
@@ -31,13 +34,16 @@ void readIMUDataRegisters() {
     drone.gyroRaw[0] = static_cast<float>(rawGyroX) / 16.4f;
     drone.gyroRaw[1] = static_cast<float>(rawGyroY) / 16.4f;
     drone.gyroRaw[2] = static_cast<float>(rawGyroZ) / 16.4f;
+    __enable_irq();
 
+    __disable_irq();
     //raw data minus the static bias
     if (drone.calibrated) {
         drone.gyroCalibrated[0] = drone.gyroRaw[0] - gyroBias[0];
         drone.gyroCalibrated[1] = drone.gyroRaw[1] - gyroBias[1];
         drone.gyroCalibrated[2] = drone.gyroRaw[2] - gyroBias[2];
     }
+    __enable_irq();
 }
 
 
