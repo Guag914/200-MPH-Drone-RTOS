@@ -7,6 +7,20 @@ cmake_minimum_required(VERSION 3.22)
 # User is free to modify the file as much as necessary
 #
 
+option(ENABLE_SIM_MODE "Enable mock buffers for simulation" OFF)
+
+if(ENABLE_SIM_MODE)
+    add_compile_definitions(SIMULATION)
+    message(STATUS "Simulation mode engaged for Renode build.")
+endif()
+
+option(ENABLE_USER_TASKS "Enable user task compilation" OFF)
+
+if(ENABLE_USER_TASKS)
+    add_compile_definitions(USER_TASKS)
+    message(STATUS "Enabled user task compilation for testing.")
+endif()
+
 # Setup compiler settings
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -43,6 +57,14 @@ add_executable(${CMAKE_PROJECT_NAME}
         src/flight/BufferPopulation.h
         User_Tasks/user_tasks.cpp
         User_Tasks/user_tasks.h
+        src/flight/Helpers.cpp
+        src/flight/Helpers.h
+        src/flight/Helpers.cpp
+        src/flight/Helpers.cpp
+        src/rtos/Logger.cpp
+        src/rtos/Logger.h
+        src/sim/SimInjector.cpp
+        src/sim/SimInjector.h
 )
 
 # Add STM32CubeMX generated sources

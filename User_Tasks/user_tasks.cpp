@@ -1,5 +1,6 @@
 #include "user_tasks.h"
 #include "../src/rtos/rtos.h"
+#include "../src/rtos/Logger.h"
 
 /*====== BEGIN USER TASK ENTRY ======*/
 
@@ -17,9 +18,9 @@ static volatile uint32_t verificationCounter = 0;
 
 [[noreturn]] void exampleScheduledTask() {
     while (true) {
-        print_str("Count: ");
-        print_uint32(verificationCounter++);
-        print_str("\n");
+        printToUSART("Count: ");
+        printToUSART(verificationCounter++);
+        printToUSART("\n");
 
         // Yield control back to the scheduler via PendSV
         yieldCurrentTask();
@@ -38,15 +39,15 @@ static volatile uint32_t verificationCounter = 0;
 
 [[noreturn]] void exampleInterruptTask() {
     while (true) {
-        print_str("--- [INTERRUPT PREEMPTION START] ---\n");
-        print_str("Captured Counter State: ");
-        print_uint32(verificationCounter); //Even though the previous task was interrupted, it will restore from where it left off
-        print_str("\n");
+        printToUSART("--- [INTERRUPT PREEMPTION START] ---\n");
+        printToUSART("Captured Counter State: ");
+        printToUSART(verificationCounter); //Even though the previous task was interrupted, it will restore from where it left off
+        printToUSART("\n");
 
         for (volatile uint32_t i = 0; i < 15000000UL; i++) { // Breifly pause for visual testing
             __asm__ volatile("nop");
         }
-        print_str("--- [INTERRUPT PREEMPTION END - RESTORING] ---\n");
+        printToUSART("--- [INTERRUPT PREEMPTION END - RESTORING] ---\n");
 
         yieldCurrentTask();
     }
@@ -68,7 +69,7 @@ void registerUserTasks() {
     /*BEGIN USER TASK REGISTRATION*/
 
     // 1. Register the Scheduled Task (Time period set to 1000ms)
-    initializeNewTask(exampleScheduledTask, 100, "ExampleScheduledTask");
+    initializeNewTask(exampleScheduledTask, 50, "ExampleScheduledTask");
     taskControlBlocks[activeTasks - 1].priority = 5;               ///< Medium priority background worker
     taskControlBlocks[activeTasks - 1].taskState = TaskState::READY; ///< Starts as READY to run on startup
 
@@ -91,7 +92,6 @@ void registerUserTasks() {
  * task you registered, index 2 will point to the second task you registered etc.
  */
 
-
 static uint32_t userSeed = 98765;
 static uint32_t getUserRandom(int range) { // Used to find a random number
     userSeed = (1103515245 * userSeed + 12345) % 2147483648;
@@ -102,6 +102,7 @@ void callUserInterruptTasks() {
     /*BEGIN INTERRUPT TASK CALLING LOGIC*/
 
     // Simulates an asynchronous hardware interrupt firing (approx. 1 in 1000 SysTicks)
+    // These random value parameters call the interrupt every few seconds
     if (getUserRandom(1000) == 500) {
         // Change the index here to match the exact TCB position of your target Interrupt Task!
         decideNextInterruptTask(&taskControlBlocks[2]);

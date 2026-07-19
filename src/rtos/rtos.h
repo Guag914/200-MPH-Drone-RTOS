@@ -45,8 +45,6 @@ extern "C" {
 #endif
 
 void start_drone_rtos(void);
-extern void print_str(const char* str);
-
 extern uint32_t** currTaskAddress;
 extern uint32_t** nextTaskAddress;
 
@@ -58,8 +56,11 @@ extern void yieldCurrentTask(void);
 } // Close extern "C" briefly to allow C++ scope
 extern TaskControlBlock taskControlBlocks[MAX_TASKS];
 extern int activeTasks;
-extern "C" void decideNextInterruptTask(TaskControlBlock* interruptTask);
-extern "C" void print_uint32(uint32_t value);
+extern void decideNextInterruptTask(TaskControlBlock* interruptTask);
+
+extern "C" bool switchPending;
+
+extern volatile bool rtosStarted;
 extern "C" { // Re-open extern "C"
 #endif
 
