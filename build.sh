@@ -1,15 +1,40 @@
 #!/bin/bash
 
-# Default both flags to OFF
 SIM_FLAG="OFF"
 USER_FLAG="OFF"
+DEBUG_FLAG="OFF"
 
-# Evaluate command line argument
-if [ "$1" == "sim" ]; then
+# Parse arguments
+MODE=""
+DEBUG_ARG=""
+
+for arg in "$@"; do
+    if [ "$arg" == "sim" ] || [ "$arg" == "user" ]; then
+        MODE="$arg"
+    elif [ "$arg" == "--debug" ] || [ "$arg" == "debug" ]; then
+        DEBUG_ARG="ON"
+    fi
+done
+
+# Evaluate modes
+if [ "$MODE" == "sim" ]; then
     SIM_FLAG="ON"
-elif [ "$1" == "user" ]; then
+elif [ "$MODE" == "user" ]; then
     USER_FLAG="ON"
 fi
+
+# Enforce debug constraints: Allowed in default or sim mode, blocked in user mode
+if [ "$DEBUG_ARG" == "ON" ]; then
+    if [ "$USER_FLAG" == "ON" ]; then
+        echo "Error: --debug flag cannot be used in 'user' mode."
+        exit 1
+    else
+        DEBUG_FLAG="ON"
+    fi
+fi
+
+# Ensure bin directory exists
+mkdir -p bin
 
 # Build profile 1
 cmake \
@@ -17,11 +42,13 @@ cmake \
 -DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake \
 -DENABLE_SIM_MODE=$SIM_FLAG \
 -DENABLE_USER_TASKS=$USER_FLAG \
+-DENABLE_DEBUG=$DEBUG_FLAG \
 -G Ninja \
 -S . \
 -B cmake-build-debug
 
-cmake --build cmake-build-debug -j10
+if [ $? -ne 0 ]; then exit 1; fi
+cmake --build cmake-build-debug --clean-first -j10
 
 # Build profile 2
 cmake \
@@ -29,18 +56,25 @@ cmake \
 -DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake \
 -DENABLE_SIM_MODE=$SIM_FLAG \
 -DENABLE_USER_TASKS=$USER_FLAG \
+-DENABLE_DEBUG=$DEBUG_FLAG \
 -G Ninja \
 -S . \
 -B cmake-build-debug-1
 
-/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/bin/cmake \
---build /Users/akshaygillett/CLionProjects/RTOS/cmake-build-debug-1 \
---target DRONE-RTOS -j 10
+if [ $? -ne 0 ]; then exit 1; fi
+cmake --build cmake-build-debug-1 --target DRONE-RTOS --clean-first -j 10
 
-echo""
-echo""
+# Post-build copy to bin directory
+if [ -f "cmake-build-debug-1/DRONE-RTOS.elf" ]; then
+    cp cmake-build-debug-1/DRONE-RTOS.elf bin/
+fi
+
+echo ""
+echo ""
 echo "==================================="
 echo "Build complete."
-echo "ENABLE_SIM_MODE=$SIM_FLAG"
-echo "ENABLE_USER_TASKS=$USER_FLAG"
+echo "Simulation mode is $SIM_FLAG"
+echo "User task mode is $USER_FLAG"
+echo "Debug mode is $DEBUG_FLAG"
+echo "Binary location: ./bin/DRONE-RTOS.elf"
 echo "==================================="

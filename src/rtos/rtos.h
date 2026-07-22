@@ -6,7 +6,7 @@
 //this section is completely HIDDEN from the C compiler (main.c)
 #ifdef __cplusplus
 
-#define MAX_TASKS 20
+#define MAX_TASKS 13
 
 enum class TaskState : uint8_t {
     BLOCKED = 0,
@@ -21,7 +21,7 @@ enum class TaskType : uint8_t {
 
 struct TaskControlBlock {
     void (*taskCodeAddress)();
-    alignas(8) uint32_t taskStack[1024];
+    alignas(8) uint32_t taskStack[2048];
     uint32_t* topOfStack;
     uint32_t executionPeriod;
     uint32_t lastRunTime;

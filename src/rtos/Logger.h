@@ -7,6 +7,7 @@
 
 #ifdef __cplusplus
 #include <cstdint>
+#include <string>
 
 extern void printToUSART(char c);
 extern void printToUSART(const char* str);
@@ -17,6 +18,8 @@ extern void printToUSART(int32_t val);
 extern void printToUSART(float val);
 extern void printToUSART(double val);
 extern void printToUSART(bool b);
+void printToUSART(int c);
+void printToUSART(const std::string& c);
 
 #endif
 #endif

@@ -97,22 +97,6 @@ CRSFPacket populateCRSFBuffer() {
     return localContainer;
 }
 
-void readBatteryVoltage() {
-    currentBoardConfig.battery_adc->SQR3 = currentBoardConfig.battery_channel & ADC_SQR3_SQ1;
-
-    currentBoardConfig.battery_adc->SR &= ~ADC_SR_EOC;
-    currentBoardConfig.battery_adc->CR2 |= ADC_CR2_SWSTART;
-
-    yieldCurrentTask();
-    const uint16_t rawAdcValue = currentBoardConfig.battery_adc->DR;
-
-    constexpr float VOLTAGE_DIVIDER_RATIO = 11.0f; //adjust based on schematic
-
-    const float voltage = (static_cast<float>(rawAdcValue) * (3.3f / 4095.0f)) * VOLTAGE_DIVIDER_RATIO;
-
-    drone.batteryVoltage = voltage;
-}
-
 //dshotgeneration helpers
 
 //motor 1: TIM1_CH1 -> DMA2, stream 1

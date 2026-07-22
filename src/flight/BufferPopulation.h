@@ -16,7 +16,6 @@ struct CRSFPacket { uint8_t bytes[26]; };
 // Global function declarations
 IMURawPacket populateIMUBuffer();
 CRSFPacket populateCRSFBuffer();
-void readBatteryVoltage();
 
 extern void startIMU_DMARead();
 extern void startCRSF_DMARead();

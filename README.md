@@ -83,13 +83,29 @@ Once you have modified `User_Tasks/user_tasks.cpp` with your own loops, you must
     * **Mac / Linux**:
       ```bash
       chmod +x build.sh
-      ./build.sh
+      ./build.sh 
       ```
     * **Windows**:
       ```cmd
       build.bat
       ```
-
+3. Flags: 
+   *  ``` 
+      --debug #ensures methods log to usart1 peripheral (not usable with user mode)
+   * ```
+     sim #enables sim mode, allowing renode to simulate the hardware
+   * ```
+     user #disables drone tasks, and allows the user to compile their own tasks via User_Tasks.cpp
+     
+4. Example Commands: 
+   * **Mac / Linux**:
+     ```bash
+     ./build.sh sim --debug #run this mode to see the drone tasks actively running
+     ./build.sh user #run this mode to compile your own tasks
+   * **Windows**:
+     ```cmd
+       build.bat sim --debug #run this mode to see the drone tasks actively running
+       build.bat user #run this mode to compile your own tasks
 ---
 
 ## Repository Structure:

@@ -9,7 +9,7 @@
 #include "../flight/flight_control.h"
 #include "../flight/BufferPopulation.h"
 
-#define MAX_TASKS 20 //update this later to a value as needed
+#define MAX_TASKS 13 //update this later to a value as needed
 #define SYSTICK_BASE_ADDRESS (0xE000E010UL)
 
 volatile uint32_t globalSystemTicks = 0;
@@ -33,8 +33,8 @@ static int preemptDepth = 0;
     }
 
     void executeRandomInterrupts() {
-        if (getRandom(100) == 50) { decideNextInterruptTask(&taskControlBlocks[2]); }
-        if (getRandom(100) == 50) { decideNextInterruptTask(&taskControlBlocks[1]); }
+        // if (getRandom(100) == 50) { decideNextInterruptTask(&taskControlBlocks[2]); }
+        // if (getRandom(100) == 50) { decideNextInterruptTask(&taskControlBlocks[1]); }
     }
 
 #endif
@@ -52,7 +52,7 @@ bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const cha
     taskControlBlocks[activeTasks].taskType = TaskType::SCHEDULED;
 
     //point to the very ends of the 1024-word array idx = 1023
-    taskControlBlocks[activeTasks].topOfStack = &taskControlBlocks[activeTasks].taskStack[1023];
+    taskControlBlocks[activeTasks].topOfStack = &taskControlBlocks[activeTasks].taskStack[2047];
     taskControlBlocks[activeTasks].taskStack[0] = 0xDEADBEEF;
     taskControlBlocks[activeTasks].topOfStack -= 32;
 
@@ -81,7 +81,7 @@ bool initializeNewTask(void (*functionAddress)(), const char* textName) { //set 
 
     taskControlBlocks[activeTasks].taskType = TaskType::INTERRUPT;
 
-    taskControlBlocks[activeTasks].topOfStack = &taskControlBlocks[activeTasks].taskStack[1023];
+    taskControlBlocks[activeTasks].topOfStack = &taskControlBlocks[activeTasks].taskStack[2047];
     taskControlBlocks[activeTasks].taskStack[0] = 0xDEADBEEF;
     taskControlBlocks[activeTasks].topOfStack -= 32;
 
@@ -230,12 +230,16 @@ extern "C" void SysTick_Handler() {
     globalSystemTicks++;
     switchPending = false;
 
-    for (int i = 0; i < activeTasks; i++) {
+    // for (int i = 0; i < activeTasks; i++) {
+    //     printToUSART("Task "); printToUSART(i); printToUSART(": name=");
+    //     printToUSART(taskControlBlocks[i].taskName);
+    //     printToUSART(" canary="); printToUSART(taskControlBlocks[i].taskStack[0]);
+    //     printToUSART(" state="); printToUSART(static_cast<uint32_t>(taskControlBlocks[i].taskState));
+    //     printToUSART(" prio="); printToUSART(static_cast<uint32_t>(taskControlBlocks[i].priority));
+    //     printToUSART("\n");
+    // }
 
-        if (taskControlBlocks[i].taskStack[0] != 0xDEADBEEF) {
-            drone.errorMSG = ERROR::STACK_OVERFLOW;
-            drone.currentSystemState = FlightState::ERROR;
-        }
+    for (int i = 0; i < activeTasks; i++) {
 
         if (taskControlBlocks[i].taskType == TaskType::INTERRUPT) { continue; } //use instead of a 0 ms execution period
 
@@ -289,19 +293,53 @@ extern "C" void start_drone_rtos() {
     #else
     /*===--- START TASK ENTRY ---===*/
 
-
+    //interrupt tasks
         initializeNewTask(imuControlLoop,"IMUControlLoop");
-        taskControlBlocks[activeTasks - 1].priority = 2;
+        taskControlBlocks[activeTasks - 1].priority = 13;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
 
         initializeNewTask(crsfParsing, "CRSFParsing");
-        taskControlBlocks[activeTasks - 1].priority = 1;
+        taskControlBlocks[activeTasks - 1].priority = 12;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
 
+        initializeNewTask(dShotGeneration, "dShotGeneration");
+        taskControlBlocks[activeTasks - 1].priority = 11;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
+
+        initializeNewTask(flightStateMachine, "flightStateMachine");
+        taskControlBlocks[activeTasks - 1].priority = 10;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
+
+    //scheduled tasks
+
         initializeNewTask(radioLinkFailSafe, 50, "RadioLinkFailSafe");
-        taskControlBlocks[activeTasks - 1].priority = 0;
+        taskControlBlocks[activeTasks - 1].priority = 9;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
+        // initializeNewTask(lowLevelFailSafe, 50, "lowLevelFailSafe");
+        // taskControlBlocks[activeTasks - 1].priority = 8;
+        // taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
+
+        initializeNewTask(powerManagement, 50, "powerManagement");
+        taskControlBlocks[activeTasks - 1].priority = 7;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
+
+        //this function is overflowing
+        // initializeNewTask(telemetryTX, 100, "telemetryTX");
+        // taskControlBlocks[activeTasks - 1].priority = 6;
+        // taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
+
+        initializeNewTask(updatePeripherals, 100, "updatePeripherals");
+        taskControlBlocks[activeTasks - 1].priority = 5;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
+
+        initializeNewTask(usbCLI, 50, "usbCLI");
+        taskControlBlocks[activeTasks - 1].priority = 4;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
+
+        initializeNewTask(iwdgTask, 100, "iwdgTask");
+        taskControlBlocks[activeTasks - 1].priority = 3;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
     /*===--- END TASK ENTRY ---===*/
     #endif
@@ -327,36 +365,3 @@ extern "C" void start_drone_rtos() {
     printToUSART("Booting Drone RTOS Scheduler Kernel...\n\n");
     executeTaskLoop();
 }
-
-//Task code: Instead of returning a value, tasks pass data to each other using global/file-scope thread-safe buffers, lock-free queues, or shared state structs.
-
-// Interrupt zone:
- // void readIMUDataRegisters(){} //reads imu and does calculations
- // void stateEstimation(){} //low level pass filters (e.g. kalman filter), and updates structs used for calculations
- // void flightLoop(){} //pid and mixer calculations
-
- // void crsfParsing(){} //parses incoming radio signals
-
- // void dShotGeneration(){} //cleans up the DMA buffers for next cycle to esc
-
- // void flightStateMachine() {} //tracks states such as DISARMED, FAILSAFE etc.
-
- //Scheduled zone: Must use while (true) loops
- //high priority
- // [[noreturn]] void radioLinkFailSafe(){ while (true){} } //instant disarm if radio link drops for more than 200 ms
- // [[noreturn]] void lowLevelFailSafe(){ while (true){} } //for non emergencies e.g. low battery or gps ping low
-
- //medium priority
- [[noreturn]] void telemetryTX(){ while (true){} } //logs telemetry on the radio
- [[noreturn]] void osdUpdate(){ while (true){} } //updates osd values for the telemetry in the video footage
- [[noreturn]] void gpsParser(){ while (true){} } //updates location and transmits
-
- //low priority
- [[noreturn]] void updatePeripherals(){ while (true){} } //controls leds, beeper, and smartaudio for the vtx
- [[noreturn]] void usbCLI(){ while (true){} } //handles connections via the usbc port e.g. cli adjustments, pid tuning, and config flashing etc.
-
- //iwdg (Independent Watchdog)
- [[noreturn]] void iwdg(){while (true){} } // operates in a different part of the mcu, completely diff from the actual thread
-
- //initilization
- // void sensorCalibration() {} //reset sensor bias for accurate calculations

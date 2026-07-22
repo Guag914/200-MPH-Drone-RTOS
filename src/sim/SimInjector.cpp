@@ -18,7 +18,7 @@ IMURawPacket populateIMUMockBuffer() {
     //triggers and yields exactly the same way as other methods
     yieldCurrentTask();
 
-    //oull CS high
+    //pull CS high
     currentBoardConfig.imu_cs_port->BSRR = currentBoardConfig.imu_cs_pin;
 
     IMURawPacket rawPacket;

@@ -1,53 +1,46 @@
 cmake_minimum_required(VERSION 3.22)
 
-#
-# This file is generated only once,
-# and is not re-generated if converter is called multiple times.
-#
-# User is free to modify the file as much as necessary
-#
-
+# Set up build flags BEFORE defining the project
 option(ENABLE_SIM_MODE "Enable mock buffers for simulation" OFF)
-
 if(ENABLE_SIM_MODE)
     add_compile_definitions(SIMULATION)
     message(STATUS "Simulation mode engaged for Renode build.")
 endif()
 
 option(ENABLE_USER_TASKS "Enable user task compilation" OFF)
-
 if(ENABLE_USER_TASKS)
     add_compile_definitions(USER_TASKS)
     message(STATUS "Enabled user task compilation for testing.")
 endif()
 
-# Setup compiler settings
+option(ENABLE_DEBUG "Enable debug for visual output of values" OFF)
+if(ENABLE_DEBUG)
+    add_compile_definitions(DEBUG)
+    message(STATUS "Enabled debug for simulation testing")
+endif()
+
+# Setup language standards and export options before project initialization
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
 
-# Define the build type
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug")
 endif()
 
-# Set the project name
 set(CMAKE_PROJECT_NAME DRONE-RTOS)
-
-# Enable compile command to ease indexing with e.g. clangd
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
-# Core project settings
+# Initialize project (Cross-compiler properties applied here)
 project(${CMAKE_PROJECT_NAME} C CXX ASM)
-message("Build type: " ${CMAKE_BUILD_TYPE})
 
-# Enable CMake support for ASM and C languages
-enable_language(C CXX ASM)
-
-# Create an executable object type
+# Executable target definition
 add_executable(${CMAKE_PROJECT_NAME}
-        # Add user defined library search paths
         src/rtos/PendSV_Handler.S
         src/rtos/Main.cpp
         src/rtos/rtos.h
@@ -59,8 +52,6 @@ add_executable(${CMAKE_PROJECT_NAME}
         User_Tasks/user_tasks.h
         src/flight/Helpers.cpp
         src/flight/Helpers.h
-        src/flight/Helpers.cpp
-        src/flight/Helpers.cpp
         src/rtos/Logger.cpp
         src/rtos/Logger.h
         src/sim/SimInjector.cpp
@@ -70,33 +61,10 @@ add_executable(${CMAKE_PROJECT_NAME}
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 
-# Link directories setup
-target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined library search paths
-)
-
-# Add sources to executable
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
-        src/rtos/Main.cpp
-)
-
-# Add include paths
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined include paths
-)
-
-# Add project symbols (macros)
-target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined symbols
-)
-
 # Remove wrong libob.a library dependency when using cpp files
 list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 
 # Add linked libraries
 target_link_libraries(${CMAKE_PROJECT_NAME}
-    stm32cubemx
-
-    # Add user defined libraries
+        stm32cubemx
 )

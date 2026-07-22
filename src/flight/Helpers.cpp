@@ -4,6 +4,8 @@
 
 #include "Helpers.h"
 #include <cmath>
+#include <cstring>
+
 #include "flight_control.h"
 
 #define GYRO_CUTOFF_HZ 90.0f //11.11 ms
@@ -65,7 +67,7 @@ uint32_t dshotBuffer2[17];
 uint32_t dshotBuffer3[17];
 uint32_t dshotBuffer4[17];
 
-//other helpers
+//dshot helpers
 DShotFrame generateDShotFrame(float throttleInput) {
     DShotFrame frame;
     uint16_t throttleValue = 0;
@@ -92,4 +94,58 @@ DShotFrame generateDShotFrame(float throttleInput) {
     frame.bits[16] = 0;
 
     return frame;
+}
+
+//gps helpers
+
+uint8_t crc8_dvb_s2(const uint8_t* data, uint8_t len) { //used to add a checksum at the end
+    uint8_t crc = 0;
+    for (uint8_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x80) {
+                crc = (crc << 1) ^ 0xD5;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    return crc;
+}
+
+uint8_t formatCRSFFrame(uint8_t frameType, const uint8_t* payload, uint8_t payloadLen, uint8_t* outBuffer) {
+    if (!outBuffer || (!payload && payloadLen > 0)) {
+        return 0;
+    }
+
+    outBuffer[0] = 0xC8; //sync byte
+    outBuffer[1] = payloadLen + 2; // frame length (add 2 for type byte and crc byte)
+    outBuffer[2] = frameType; //type id byte
+
+    //copy payload
+    for (uint8_t i = 0; i < payloadLen; i++) {
+        outBuffer[3 + i] = payload[i];
+    }
+
+    //compute crc8 over frame type & payload
+    uint8_t crc = crc8_dvb_s2(&outBuffer[2], payloadLen + 1);
+    outBuffer[3 + payloadLen] = crc;
+
+    return payloadLen + 4;
+}
+
+//gps helpers
+int32_t parseNmeaCoord(const char* str, char dir) {
+    if (!str || strlen(str) < 4) return 0;
+
+    double rawVal = atof(str);
+    int degrees = static_cast<int>(rawVal / 100.0);
+    double minutes = rawVal - (degrees * 100.0);
+    double decimalDegrees = degrees + (minutes / 60.0);
+
+    if (dir == 'S' || dir == 'W') {
+        decimalDegrees = -decimalDegrees;
+    }
+
+    return static_cast<int32_t>(decimalDegrees * 1e7);
 }

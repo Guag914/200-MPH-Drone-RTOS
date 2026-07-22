@@ -22,6 +22,10 @@ extern uint32_t dshotBuffer2[17];
 extern uint32_t dshotBuffer3[17];
 extern uint32_t dshotBuffer4[17];
 
+extern uint8_t formatCRSFFrame(uint8_t frameType, const uint8_t* payload, uint8_t payloadLen, uint8_t* outBuffer);
+extern uint8_t crc8_dvb_s2(const uint8_t* data, uint8_t len);
+
+extern int32_t parseNmeaCoord(const char* str, char dir);
 #endif // __cplusplus
 
 #endif //DRONE_RTOS_HELPERS_H

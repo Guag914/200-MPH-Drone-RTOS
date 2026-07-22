@@ -5,22 +5,37 @@
 #include "Logger.h"
 
 #include <stdint.h>
+#include <string>
 
 #include "stm32f756xx.h"
 
-// Locate printToUSART(char c) in src/rtos/Logger.cpp and update it:
-void printToUSART(char c) {
-    USART1->CR1 |= (USART_CR1_TE | USART_CR1_UE);
+#if defined(SIMULATION) || defined(USER_TASKS)
+    void printToUSART(char c) {
+        USART1->CR1 |= (USART_CR1_TE | USART_CR1_UE);
 
-    while (!(USART1->ISR & USART_ISR_TXE));
-    USART1->TDR = c;
-}
+        while (!(USART1->ISR & USART_ISR_TXE)) {}
+        USART1->TDR = c;
+    }
+#else
+    void printToUSART(char c) {
+        //handle logging to a different peripheral / ground center / internal storage
+    }
+#endif
 
 void printToUSART(const char* str) {
     if (!str) return;
     while (*str) {
         printToUSART(*str++);
     }
+}
+
+void printToUSART(int c) {
+        const char ch = c + '0';
+        printToUSART(ch);
+}
+
+void printToUSART(const std::string& c) {
+    printToUSART(c.c_str());
 }
 
 void printToUSART(uint8_t val) {
@@ -64,14 +79,14 @@ void printToUSART(double val) {
         val = -val;
     }
 
-    uint32_t integerPart = static_cast<uint32_t>(val);
+    auto integerPart = static_cast<uint32_t>(val);
     printToUSART(integerPart);
     printToUSART('.');
 
     double fractionalPart = val - static_cast<double>(integerPart);
-    for (int i = 0; i < 4; i++) { // Print to 4 decimal places
+    for (int i = 0; i < 4; i++) { //print to 4 decimal places
         fractionalPart *= 10.0;
-        uint32_t digit = static_cast<uint32_t>(fractionalPart);
+        auto digit = static_cast<uint32_t>(fractionalPart);
         printToUSART(static_cast<char>('0' + digit));
         fractionalPart -= digit;
     }

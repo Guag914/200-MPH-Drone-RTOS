@@ -5,6 +5,6 @@ machine LoadPlatformDescription @platforms/cpus/stm32f746.repl
 
 showAnalyzer sysbus.usart1
 
-sysbus LoadELF @cmake-build-debug-1/DRONE-RTOS.elf
+sysbus LoadELF @bin/DRONE-RTOS.elf
 
 cpu VectorTableOffset 0x08000000
