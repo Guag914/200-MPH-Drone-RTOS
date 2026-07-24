@@ -94,7 +94,7 @@ void stateEstimation() {
     printToUSART(" [SE-CF] Attitude: \n");
     printToUSART("  Attitude Roll: "); printToUSART(drone.attitudeRoll); printToUSART("\n");
     printToUSART("  Attitude Pitch: "); printToUSART(drone.attitudePitch); printToUSART("\n");
-    printToUSART("  Attitude Yaw: "); printToUSART(drone.attitudeYaw); printToUSART("\n\n\n");
+    printToUSART("  Attitude Yaw: "); printToUSART(drone.attitudeYaw); printToUSART("\n\n");
 #endif
 }
 
@@ -185,11 +185,13 @@ void flightLoop() { //make sure to forward values by usart
     printToUSART("  M1: "); printToUSART(drone.motorOutput[0]); printToUSART("\n");
     printToUSART("  M2: "); printToUSART(drone.motorOutput[1]); printToUSART("\n");
     printToUSART("  M3: "); printToUSART(drone.motorOutput[2]); printToUSART("\n");
-    printToUSART("  m4: "); printToUSART(drone.motorOutput[3]); printToUSART("\n\n\n");
+    printToUSART("  m4: "); printToUSART(drone.motorOutput[3]); printToUSART("\n\n");
 #endif
 }
 
 void crsfParsing() {
+    yieldCurrentTask();
+
     while (true) {
         #ifdef SIMULATION
         CRSFPacket crsfBuffer =  populateCRSFMockBuffer();
@@ -202,7 +204,7 @@ void crsfParsing() {
         if (crsfBuffer.bytes[0] != 0xC8) {//checks for corrupted data
 
             drone.currentSystemState = FlightState::ERROR;
-            drone.errorMSG = "[CRSF] Corrupted data input stream.\n";
+            drone.errorMSG = "[CRSF] Corrupted data input stream!\n";
             yieldCurrentTask();
             continue;
         }
@@ -236,7 +238,7 @@ void crsfParsing() {
         printToUSART("  Roll Stick: "); printToUSART(drone.rollStick); printToUSART("\n");
         printToUSART("  Pitch Stick: "); printToUSART(drone.pitchStick); printToUSART("\n");
         printToUSART("  Yaw Stick: "); printToUSART(drone.yawStick); printToUSART("\n");
-        printToUSART("  Throttle Stick: "); printToUSART(drone.throttleStick); printToUSART("\n\n\n");
+        printToUSART("  Throttle Stick: "); printToUSART(drone.throttleStick); printToUSART("\n\n");
 #endif
 
         drone.lastValidRCFrameTime = globalSystemTicks;
@@ -245,6 +247,8 @@ void crsfParsing() {
 }
 
 void radioLinkFailSafe() {
+    yieldCurrentTask();
+
     while (true) {
         if (globalSystemTicks - drone.lastValidRCFrameTime > 500) {
             drone.armed = false;
@@ -255,9 +259,46 @@ void radioLinkFailSafe() {
         printToUSART("Radio Link Failsafe: \n");
         printToUSART(" [RLFS] Drone CRSF Link Quality: \n");
         printToUSART("  Armed: "); printToUSART(drone.armed); printToUSART("\n");
-        printToUSART("  Last Frame: "); printToUSART(globalSystemTicks - drone.lastValidRCFrameTime); printToUSART("\n\n\n");
+        printToUSART("  Last Frame: "); printToUSART(globalSystemTicks - drone.lastValidRCFrameTime); printToUSART("\n\n");
 #endif
         yieldCurrentTask();
+    }
+}
+
+static uint32_t lowVoltageStartTime = 0; //outside the while true loop so it doesn't get reset
+static bool lowVoltageStarted = false;
+constexpr float LOW_VOLTAGE_THRESHOLD = 19.2f;
+
+void lowLevelFailSafe() {
+    yieldCurrentTask();
+
+    while (true) {
+        //assumes that battery info has been populated by power management
+        if (drone.batteryVoltage < LOW_VOLTAGE_THRESHOLD) {           
+            if (!lowVoltageStarted) {
+                lowVoltageStarted = true;
+                lowVoltageStartTime = globalSystemTicks;
+            } else {
+                if (globalSystemTicks - lowVoltageStartTime > 5000) {
+                    if (drone.currentSystemState == FlightState::ARMED) {
+                        drone.currentSystemState = FlightState::WARN;
+                        drone.warnMSG = WARN::LOW_BATTERY;
+                    }
+                }
+            }
+        } else {
+            lowVoltageStarted = false;
+            lowVoltageStartTime = 0;
+        }
+
+#ifdef DEBUG
+        printToUSART("Low Level Fail Safe: \n");
+        printToUSART(" [LLFS] Drone Battery Status: \n");
+        printToUSART("  Armed: "); printToUSART(drone.armed); printToUSART("\n");
+        printToUSART("  Dist To Threshold: "); printToUSART(drone.batteryCapacityUsed - LOW_VOLTAGE_THRESHOLD); printToUSART("\n\n");
+#endif
+
+        yieldCurrentTask(); //if no voltage drop was detected ignore and yield the task
     }
 }
 
@@ -280,7 +321,7 @@ void sensorCalibration() { //performs a mean over the gyro samples and subtracts
     printToUSART(" [SC] Reporting Sum Values:\n");
     printToUSART("  SumX: "); printToUSART(sumX); printToUSART("\n");
     printToUSART("  SumY: "); printToUSART(sumY); printToUSART("\n");
-    printToUSART("  SumZ: "); printToUSART(sumZ); printToUSART("\n\n\n");
+    printToUSART("  SumZ: "); printToUSART(sumZ); printToUSART("\n\n");
 #endif
 
     gyroBias[0] = sumX / samples;
@@ -293,7 +334,8 @@ void sensorCalibration() { //performs a mean over the gyro samples and subtracts
 #endif
 }
 
-//ensure that powermanagement covers all fields in the drone struct
+
+volatile uint16_t batteryADCBuffer[2] = {0, 0}; //used for circular buffer
 void powerManagement() { //becomes its own task as it will be used in multiple places
     static uint32_t lastRunTime = 0;
 
@@ -301,36 +343,21 @@ void powerManagement() { //becomes its own task as it will be used in multiple p
     constexpr float TOTAL_BATTERY_CAPACITY_MAH = 1500.0f;
     constexpr float CURRENT_SENSOR_SCALE = 0.25f;
 
+    yieldCurrentTask();
+
     while (true) {
         #ifdef SIMULATION
-            yieldCurrentTask();
-            const uint16_t rawVoltageAdcValue = 1670 + ((rand() % 40) - 20);
-            float voltage = static_cast<float>(rawVoltageAdcValue) * (3.3f / 4095.0f) * VOLTAGE_DIVIDER_RATIO;
-
-            yieldCurrentTask();
-            const uint16_t rawCurrentAdcValue = 3100 + ((rand() % 60) - 30);
-            float currentVolts = static_cast<float>(rawCurrentAdcValue) * (3.3f / 4095.0f);
+            float voltage = (1670.0f + ((rand() % 40) - 20)) * (3.3f / 4095.0f) * VOLTAGE_DIVIDER_RATIO;
+            float currentVolts = (3100.0f + ((rand() % 60) - 30)) * (3.3f / 4095.0f);
             float currentAmps = currentVolts / CURRENT_SENSOR_SCALE;
         #else
-            //voltage adc
-            currentBoardConfig.battery_adc->SQR3 = currentBoardConfig.battery_voltage_channel & ADC_SQR3_SQ1;
-            currentBoardConfig.battery_adc->SR &= ~ADC_SR_EOC;
-            currentBoardConfig.battery_adc->CR2 |= ADC_CR2_SWSTART;
-            yieldCurrentTask();
+            const uint16_t rawVoltageAdcValue = batteryADCBuffer[0]; //get latest values from circular dma buffer
+            const uint16_t rawCurrentAdcValue = batteryADCBuffer[1];
 
-            const uint16_t rawVoltageAdcValue = currentBoardConfig.battery_adc->DR;
+            // Convert raw values to actual Volts and Amps
             float voltage = static_cast<float>(rawVoltageAdcValue) * (3.3f / 4095.0f) * VOLTAGE_DIVIDER_RATIO;
-
-            //current adc
-            currentBoardConfig.battery_adc->SQR3 = currentBoardConfig.battery_current_channel & ADC_SQR3_SQ1;
-            currentBoardConfig.battery_adc->SR &= ~ADC_SR_EOC;
-            currentBoardConfig.battery_adc->CR2 |= ADC_CR2_SWSTART;
-            yieldCurrentTask();
-
-
-            const uint16_t rawCurrentAdcValue = currentBoardConfig.battery_adc->DR;
             float currentVolts = static_cast<float>(rawCurrentAdcValue) * (3.3f / 4095.0f);
-            float currentAmps = currentVolts / CURRENT_SENSOR_SCALE; //use ohm's law to calculate based on shunt resistor reading
+            float currentAmps = currentVolts / CURRENT_SENSOR_SCALE;
         #endif
 
         //total capacity
@@ -360,51 +387,17 @@ void powerManagement() { //becomes its own task as it will be used in multiple p
         printToUSART("  Voltage: "); printToUSART(drone.batteryVoltage); printToUSART("\n");
         printToUSART("  Current: "); printToUSART(currentAmps); printToUSART("\n");
         printToUSART("  Capacity: "); printToUSART(drone.batteryCapacityUsed); printToUSART("\n");
-        printToUSART("  Percent: "); printToUSART(percentRemaining); printToUSART("\n\n\n");
+        printToUSART("  Percent: "); printToUSART(percentRemaining); printToUSART("\n\n");
 #endif
         yieldCurrentTask();
-    }
-}
-
-void lowLevelFailSafe() {
-    static uint32_t lowVoltageStartTime = 0; //outside the while true loop so it doesn't get reset
-    static bool lowVoltageStarted = false;
-
-    while (true) {
-        //assumes that battery info has been populated by power management
-        constexpr float LOW_VOLTAGE_THRESHOLD = 19.2f;
-
-        if (drone.batteryVoltage < LOW_VOLTAGE_THRESHOLD) {
-            if (!lowVoltageStarted) {
-                lowVoltageStarted = true;
-                lowVoltageStartTime = globalSystemTicks;
-            } else {
-                if (globalSystemTicks - lowVoltageStartTime > 5000) {
-                    if (drone.currentSystemState == FlightState::ARMED) {
-                        drone.currentSystemState = FlightState::WARN;
-                        drone.warnMSG = WARN::LOW_BATTERY;
-                    }
-                }
-            }
-        } else {
-            lowVoltageStarted = false;
-            lowVoltageStartTime = 0;
-        }
-
-#ifdef DEBUG
-        printToUSART("Low Level Fail Safe: \n");
-        printToUSART(" [LLFS] Drone Battery Status: \n");
-        printToUSART("  Armed: "); printToUSART(drone.armed); printToUSART("\n");
-        printToUSART("  Dist To Threshold: "); printToUSART(drone.batteryCapacityUsed - LOW_VOLTAGE_THRESHOLD); printToUSART("\n\n\n");
-#endif
-
-        yieldCurrentTask(); //if no voltage drop was detected ignore and yield the task
     }
 }
 
 void dShotGeneration() {
     //enable the timer update DMA requests once at boot
     currentBoardConfig.motor_timer->DIER |= TIM_DIER_UDE;
+
+    yieldCurrentTask();
 
     while (true) {
         //populate local buffers via helper and trigger the transfer
@@ -431,6 +424,8 @@ void dShotGeneration() {
 }
 
 void flightStateMachine() {
+    yieldCurrentTask();
+
     while (true) {
         bool armed = drone.armed;
         //switch statement to go through all the possible states
@@ -475,7 +470,7 @@ void flightStateMachine() {
         printToUSART(" [FSM] Errors: \n");
         printToUSART("  Warn msg: "); printToUSART(drone.warnMSG.data()); printToUSART("\n");
         printToUSART("  Error msg: "); printToUSART(drone.errorMSG.data()); printToUSART("\n");
-        printToUSART("  Failsafe msg: "); printToUSART(drone.failsafeMSG.data()); printToUSART("\n\n\n");
+        printToUSART("  Failsafe msg: "); printToUSART(drone.failsafeMSG.data()); printToUSART("\n\n");
 
         yieldCurrentTask();
     }
@@ -483,6 +478,8 @@ void flightStateMachine() {
 
 //master task for imu
 void imuControlLoop() { // one interrupt-zone task, triggered by real IMU DRDY eventually
+    yieldCurrentTask();
+
     while (true) {
         printToUSART("[IMU-CL] Start: \n");
         readIMUDataRegisters();
@@ -502,14 +499,16 @@ void iwdgTask() {
     IWDG->KR  = 0xCCCC; //start watchdog
 
 #ifdef DEBUG
-    printToUSART("[IWDG] Timer Started \n\n\n");
+    printToUSART("[IWDG] Timer Started \n\n");
 #endif
+
+    yieldCurrentTask();
 
     while (true) {
         IWDG->KR = 0xAAAA; //reset the counter
 
 #ifdef DEBUG
-        printToUSART("[IWDG] Timer Reset! \n\n\n");
+        printToUSART("[IWDG] Timer Reset! \n\n");
 #endif
 
         yieldCurrentTask();
@@ -517,6 +516,8 @@ void iwdgTask() {
 }
 
 void updatePeripherals() {
+    yieldCurrentTask();
+
     while (true) {
 
         //LED logic
@@ -563,7 +564,7 @@ void updatePeripherals() {
         currentBoardConfig.buzzer_port->BSRR == currentBoardConfig.buzzer_pin ? printToUSART("  State: ON\n\n") : printToUSART("  State: OFF\n\n");
 
         printToUSART(" [UP] System: \n");
-        printToUSART("  State: "); printToUSART(to_string(drone.currentSystemState).c_str()); printToUSART("\n\n\n");
+        printToUSART("  State: "); printToUSART(to_string(drone.currentSystemState).c_str()); printToUSART("\n\n");
 #endif
 
         yieldCurrentTask(); //yield
@@ -576,6 +577,8 @@ uint8_t flightModeTX[1];
 uint8_t gpsTX[15];
 
 void telemetryTX() {
+    yieldCurrentTask();
+
     while (true) {
         //handle battery transmitting
         const auto voltage = static_cast<uint16_t>(drone.batteryVoltage * 10.0f);
@@ -682,6 +685,8 @@ void telemetryTX() {
 }
 
 void osdUpdate() {
+    yieldCurrentTask();
+
     while (true) {
 
         //yield
@@ -692,6 +697,8 @@ void osdUpdate() {
 void gpsParser() {
     static char sentenceBuffer[96];
     static uint8_t bufferIdx = 0;
+
+    yieldCurrentTask();
 
     while (true) {
 
@@ -800,7 +807,7 @@ void gpsParser() {
         printToUSART(" [GPSP] Directionality: \n");
         printToUSART("  Ground Speed (kph): "); printToUSART(drone.groundSpeed); printToUSART("\n");
         printToUSART("  Heading: "); printToUSART(drone.heading); printToUSART("\n");
-        printToUSART("  Satellites: "); printToUSART(drone.satellites); printToUSART("\n\n\n");
+        printToUSART("  Satellites: "); printToUSART(drone.satellites); printToUSART("\n\n");
 #endif
 
         yieldCurrentTask(); //yield
@@ -815,7 +822,10 @@ void usbCLI() {
     printToUSART("   DRONE RTOS FLIGHT TERMINAL   \r\n");
     printToUSART("=================================\r\n# ");
 
+    yieldCurrentTask();
+
     while (true) {
+        printToUSART("[USB-CLI] Command Line Active!\n\n");
         while (currentBoardConfig.cli_uart->ISR & USART_ISR_RXNE) { //wait for bytes
             char c = static_cast<char>(currentBoardConfig.cli_uart->RDR);
 

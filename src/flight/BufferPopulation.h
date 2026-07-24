@@ -25,6 +25,8 @@ extern void startMotor2_DMATransfer();
 extern void startMotor3_DMATransfer();
 extern void startMotor4_DMATransfer();
 
+extern void startBatteryADC_DMA();
+
 extern uint8_t imuRawBuffer[12];
 extern uint8_t crsfRingBuffer[HW_UART_BUFFER_SIZE];
 

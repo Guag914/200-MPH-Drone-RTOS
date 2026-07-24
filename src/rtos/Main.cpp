@@ -8,9 +8,8 @@
 #include "../../User_Tasks/user_tasks.h"
 #include "../flight/flight_control.h"
 #include "../flight/BufferPopulation.h"
+#include <new>
 
-#define MAX_TASKS 13 //update this later to a value as needed
-#define SYSTICK_BASE_ADDRESS (0xE000E010UL)
 
 volatile uint32_t globalSystemTicks = 0;
 volatile bool rtosStarted = false;
@@ -19,9 +18,10 @@ volatile bool rtosStarted = false;
 TaskControlBlock taskControlBlocks[MAX_TASKS];
 int activeTasks = 0;
 static int currTaskIndex = 0;
+int currLoopIndex;
 
 static int preemptStack[MAX_TASKS];
-static int preemptDepth = 0;
+int preemptDepth = 0;
 
 //sim helpers
 #ifdef SIMULATION
@@ -39,11 +39,25 @@ static int preemptDepth = 0;
 
 #endif
 
-
 //actual rtos logic
-bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const char* textName) { //set the default to scheduled
+static bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const char* textName, uint32_t stackSizeWords = 256) { //set the default to scheduled
     if (activeTasks >= MAX_TASKS) { return false; }
 
+    //dynamic memory management:
+    auto* newStack = new (std::nothrow) uint32_t[stackSizeWords + 1];
+
+    if (newStack == nullptr) {
+        drone.currentSystemState = FlightState::ERROR;
+        drone.errorMSG = ERROR::INIT_HEAP_MEN;
+        return false;
+    }
+
+    //setup stack
+    taskControlBlocks[activeTasks].taskStack = newStack;
+    taskControlBlocks[activeTasks].stackSizeWords = stackSizeWords;
+    newStack[stackSizeWords] = 0xBEEFCAFE;
+
+    //normal init
     taskControlBlocks[activeTasks].taskCodeAddress = functionAddress;
     taskControlBlocks[activeTasks].executionPeriod = timePeriod;
     taskControlBlocks[activeTasks].taskName = textName;
@@ -52,7 +66,7 @@ bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const cha
     taskControlBlocks[activeTasks].taskType = TaskType::SCHEDULED;
 
     //point to the very ends of the 1024-word array idx = 1023
-    taskControlBlocks[activeTasks].topOfStack = &taskControlBlocks[activeTasks].taskStack[2047];
+    taskControlBlocks[activeTasks].topOfStack = &newStack[stackSizeWords - 1];
     taskControlBlocks[activeTasks].taskStack[0] = 0xDEADBEEF;
     taskControlBlocks[activeTasks].topOfStack -= 32;
 
@@ -72,8 +86,20 @@ bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const cha
 }
 
 //overload the parameters for an interrupt because it doesn't have an execution period
-bool initializeNewTask(void (*functionAddress)(), const char* textName) { //set the default to scheduled
+static bool initializeNewTask(void (*functionAddress)(), const char* textName, uint32_t stackSizeWords = 256) { //set the default to scheduled
     if (activeTasks >= MAX_TASKS) { return false; }
+
+    auto* newStack = new (std::nothrow) uint32_t[stackSizeWords + 1];
+
+    if (newStack == nullptr) {
+        drone.currentSystemState = FlightState::ERROR;
+        drone.errorMSG = ERROR::INIT_HEAP_MEN;
+        return false;
+    }
+
+    taskControlBlocks[activeTasks].taskStack = newStack;
+    taskControlBlocks[activeTasks].stackSizeWords = stackSizeWords;
+    newStack[stackSizeWords] = 0xBEEFCAFE;
 
     taskControlBlocks[activeTasks].taskCodeAddress = functionAddress;
     taskControlBlocks[activeTasks].taskName = textName;
@@ -81,7 +107,7 @@ bool initializeNewTask(void (*functionAddress)(), const char* textName) { //set 
 
     taskControlBlocks[activeTasks].taskType = TaskType::INTERRUPT;
 
-    taskControlBlocks[activeTasks].topOfStack = &taskControlBlocks[activeTasks].taskStack[2047];
+    taskControlBlocks[activeTasks].topOfStack = &newStack[stackSizeWords - 1];
     taskControlBlocks[activeTasks].taskStack[0] = 0xDEADBEEF;
     taskControlBlocks[activeTasks].topOfStack -= 32;
 
@@ -153,10 +179,13 @@ void decideNextInterruptTask(TaskControlBlock* interruptTask) {
         taskControlBlocks[currTaskIndex].taskState = TaskState::READY;
         currTaskAddress = &(taskControlBlocks[currTaskIndex].topOfStack);
     } else {
-        preemptStack[preemptDepth++] = pendingWinnerIndex;
-
-        //it won't get called by systick because it doesn't have a time interval
-        taskControlBlocks[pendingWinnerIndex].taskState = TaskState::READY;
+        if (preemptDepth >= MAX_TASKS) {
+            drone.currentSystemState = FlightState::ERROR;
+            drone.errorMSG = ERROR::PREEMPT_OVERFLOW();
+        } else {
+            preemptStack[preemptDepth++] = pendingWinnerIndex;
+            taskControlBlocks[pendingWinnerIndex].taskState = TaskState::READY;
+        }
     }
 
     //update addresses to point to next and current tasks
@@ -230,16 +259,21 @@ extern "C" void SysTick_Handler() {
     globalSystemTicks++;
     switchPending = false;
 
-    // for (int i = 0; i < activeTasks; i++) {
-    //     printToUSART("Task "); printToUSART(i); printToUSART(": name=");
-    //     printToUSART(taskControlBlocks[i].taskName);
-    //     printToUSART(" canary="); printToUSART(taskControlBlocks[i].taskStack[0]);
-    //     printToUSART(" state="); printToUSART(static_cast<uint32_t>(taskControlBlocks[i].taskState));
-    //     printToUSART(" prio="); printToUSART(static_cast<uint32_t>(taskControlBlocks[i].priority));
-    //     printToUSART("\n");
-    // }
+    printToUSART("============------------ NEW TICK: ");
+    printToUSART(globalSystemTicks);
+    printToUSART(" ------------============\n");
 
     for (int i = 0; i < activeTasks; i++) {
+        currLoopIndex = i;
+
+        if (taskControlBlocks[i].taskStack[0] != 0xDEADBEEF) {
+            drone.currentSystemState = FlightState::ERROR;
+            drone.errorMSG = ERROR::STACK_OVERFLOW();
+        }
+
+        if (taskControlBlocks[i].taskStack[taskControlBlocks[i].stackSizeWords] != 0xBEEFCAFE) {
+
+        }
 
         if (taskControlBlocks[i].taskType == TaskType::INTERRUPT) { continue; } //use instead of a 0 ms execution period
 
@@ -249,6 +283,8 @@ extern "C" void SysTick_Handler() {
             }
         }
     }
+
+    currLoopIndex = 0;
 
     #ifdef USER_TASKS
         callUserInterruptTasks();
@@ -274,15 +310,20 @@ extern "C" void start_drone_rtos() {
     FPU->FPCCR |= FPU_FPCCR_ASPEN_Msk;
     FPU->FPCCR &= ~FPU_FPCCR_LSPEN_Msk;
 
+    //calibration
     printToUSART("Calibrating sensors. Keep drone still...\n");
     sensorCalibration();
-    startCRSF_DMARead();
 
+    //start dma
+    startCRSF_DMARead();
+    startBatteryADC_DMA();
+
+    //resets
     currTaskIndex = 0;
     activeTasks = 0;
 
     //register executeTaskLoop as a true rtos task
-    initializeNewTask(executeTaskLoop, "ScheduledZoneRunner");
+    initializeNewTask(executeTaskLoop, "ScheduledZoneRunner", 1024);
     taskControlBlocks[0].priority = 0; //lowest priority background worker
     taskControlBlocks[0].taskState = TaskState::RUNNING;
 
@@ -294,50 +335,48 @@ extern "C" void start_drone_rtos() {
     /*===--- START TASK ENTRY ---===*/
 
     //interrupt tasks
-        initializeNewTask(imuControlLoop,"IMUControlLoop");
+        initializeNewTask(imuControlLoop,"IMUControlLoop", DEFAULT_MAX_STACK);
         taskControlBlocks[activeTasks - 1].priority = 13;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
 
-        initializeNewTask(crsfParsing, "CRSFParsing");
+        initializeNewTask(crsfParsing, "CRSFParsing", DEFAULT_MAX_STACK);
         taskControlBlocks[activeTasks - 1].priority = 12;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
 
-        initializeNewTask(dShotGeneration, "dShotGeneration");
+        initializeNewTask(dShotGeneration, "dShotGeneration", DEFAULT_MAX_STACK);
         taskControlBlocks[activeTasks - 1].priority = 11;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
 
-        initializeNewTask(flightStateMachine, "flightStateMachine");
+        initializeNewTask(flightStateMachine, "flightStateMachine", DEFAULT_MAX_STACK);
         taskControlBlocks[activeTasks - 1].priority = 10;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
 
     //scheduled tasks
-
-        initializeNewTask(radioLinkFailSafe, 50, "RadioLinkFailSafe");
+        initializeNewTask(radioLinkFailSafe, 20, "RadioLinkFailSafe", DEFAULT_MAX_STACK);
         taskControlBlocks[activeTasks - 1].priority = 9;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
-        // initializeNewTask(lowLevelFailSafe, 50, "lowLevelFailSafe");
-        // taskControlBlocks[activeTasks - 1].priority = 8;
-        // taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
+        initializeNewTask(lowLevelFailSafe, 50, "lowLevelFailSafe", DEFAULT_MAX_STACK);
+        taskControlBlocks[activeTasks - 1].priority = 8;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
-        initializeNewTask(powerManagement, 50, "powerManagement");
+        initializeNewTask(powerManagement, 20, "powerManagement", DEFAULT_MAX_STACK);
         taskControlBlocks[activeTasks - 1].priority = 7;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
-        //this function is overflowing
-        // initializeNewTask(telemetryTX, 100, "telemetryTX");
-        // taskControlBlocks[activeTasks - 1].priority = 6;
-        // taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
+        initializeNewTask(telemetryTX, 20, "telemetryTX", DEFAULT_MAX_STACK);
+        taskControlBlocks[activeTasks - 1].priority = 6;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
-        initializeNewTask(updatePeripherals, 100, "updatePeripherals");
+        initializeNewTask(updatePeripherals, 100, "updatePeripherals", DEFAULT_MAX_STACK);
         taskControlBlocks[activeTasks - 1].priority = 5;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
-        initializeNewTask(usbCLI, 50, "usbCLI");
+        initializeNewTask(usbCLI, 20, "usbCLI", DEFAULT_MAX_STACK);
         taskControlBlocks[activeTasks - 1].priority = 4;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
-        initializeNewTask(iwdgTask, 100, "iwdgTask");
+        initializeNewTask(iwdgTask, 100, "iwdgTask", DEFAULT_MAX_STACK);
         taskControlBlocks[activeTasks - 1].priority = 3;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 

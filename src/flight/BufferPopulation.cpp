@@ -138,3 +138,22 @@ void startMotor4_DMATransfer() {
     DMA2->HIFCR = DMA_HIFCR_CTCIF4 | DMA_HIFCR_CHTIF4 | DMA_HIFCR_CTEIF4;
     currentBoardConfig.motor4_dma_stream->CR |= DMA_SxCR_TCIE | DMA_SxCR_EN;
 }
+
+void startBatteryADC_DMA() {
+    currentBoardConfig.battery_dma_stream->CR &= ~DMA_SxCR_TCIE;
+    currentBoardConfig.battery_dma_stream->PAR = reinterpret_cast<uint32_t>(&(currentBoardConfig.battery_adc->DR));
+    currentBoardConfig.battery_dma_stream->M0AR = reinterpret_cast<uint32_t>(batteryADCBuffer);
+    currentBoardConfig.battery_dma_stream->NDTR = 2;
+    
+    currentBoardConfig.battery_dma_stream->CR |= DMA_SxCR_CIRC | DMA_SxCR_MINC | DMA_SxCR_MSIZE_0 | DMA_SxCR_PSIZE_0;
+    currentBoardConfig.battery_dma_stream->CR |= DMA_SxCR_EN;
+    currentBoardConfig.battery_adc->CR1 |= ADC_CR1_SCAN;
+    currentBoardConfig.battery_adc->CR2 |= ADC_CR2_CONT;
+
+    currentBoardConfig.battery_adc->SQR3 = (currentBoardConfig.battery_voltage_channel) | (currentBoardConfig.battery_current_channel << 5);
+    currentBoardConfig.battery_adc->SQR1 |= (1 << 20);
+
+    currentBoardConfig.battery_adc->CR2 |= ADC_CR2_DMA | ADC_CR2_DDS;
+    currentBoardConfig.battery_adc->CR2 |= ADC_CR2_ADON;
+    currentBoardConfig.battery_adc->CR2 |= ADC_CR2_SWSTART;
+}

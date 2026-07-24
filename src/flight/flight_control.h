@@ -2,8 +2,9 @@
 #define FLIGHT_CONTROL_H
 
 #include <stdint.h>
+#include "../rtos/rtos.h"
 #include <string>
-
+#include <string_view>
 #include "stm32f7xx.h"
 
 #ifdef __cplusplus //this section is completely HIDDEN from the C compiler (main.c)
@@ -38,7 +39,13 @@ struct FAILSAFE { //add failsafe messages
 };
 
 struct ERROR {
-    static constexpr std::string_view STACK_OVERFLOW = "STACK OVERFLOW DETECTED: FORCE DISARMED\n";
+    static constexpr std::string_view INIT_HEAP_MEN = "Out of Heap Memory allocating task stack\n";
+
+    //overflows
+    // static constexpr std::string_view STACK_OVERFLOW = ;
+    static std::string STACK_OVERFLOW() { return "STACK OVERFLOW DETECTED! Index: " + std::to_string(currLoopIndex) + "\n"; };
+    static std::string PREEMPT_OVERFLOW() { return "PREEMPT STACK OVERFLOW! Depth: " + std::to_string(preemptDepth) + "\n";}
+    static std::string GUARD_BREACH() { return "TOP GUARD BREACH! Index: " + std::to_string(currLoopIndex) + "\n"; };
 };
 
 struct DroneState {
@@ -106,6 +113,7 @@ struct HardwarePinMap {
     uint16_t imu_cs_pin;
 
     ADC_TypeDef* battery_adc;
+    DMA_Stream_TypeDef* battery_dma_stream;
     uint32_t battery_voltage_channel;
     uint32_t battery_current_channel;
 
@@ -150,7 +158,9 @@ inline HardwarePinMap currentBoardConfig = { //ensure to configure this properly
 
     //battery data streams
     .battery_adc     = ADC1,
+    .battery_dma_stream = DMA2_Stream0,
     .battery_voltage_channel = ADC_CHANNEL_10,
+    .battery_current_channel = ADC_CHANNEL_11,
 
     //dshot motor timers + dma
     .motor_timer = TIM1, //map physical timer
@@ -210,6 +220,7 @@ extern DroneState drone;
 extern uint8_t batteryTX[8];
 extern uint8_t flightModeTX[1];
 extern uint8_t gpsTX[15];
+extern volatile uint16_t batteryADCBuffer[2];
 
 #ifdef __cplusplus
 }

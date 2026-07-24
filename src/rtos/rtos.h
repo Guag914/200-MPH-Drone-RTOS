@@ -6,7 +6,9 @@
 //this section is completely HIDDEN from the C compiler (main.c)
 #ifdef __cplusplus
 
-#define MAX_TASKS 13
+#define MAX_TASKS 14
+#define DEFAULT_MAX_STACK 1024
+#define SYSTICK_BASE_ADDRESS (0xE000E010UL)
 
 enum class TaskState : uint8_t {
     BLOCKED = 0,
@@ -20,8 +22,12 @@ enum class TaskType : uint8_t {
 };
 
 struct TaskControlBlock {
+    uint32_t* taskStack; //change to ptr for dynamic mem
+    uint32_t stackSizeWords; //size
+
     void (*taskCodeAddress)();
-    alignas(8) uint32_t taskStack[2048];
+    // alignas(8) uint32_t taskStack[MAX_SYSTEM_MEM];
+
     uint32_t* topOfStack;
     uint32_t executionPeriod;
     uint32_t lastRunTime;
@@ -48,6 +54,9 @@ void start_drone_rtos(void);
 extern uint32_t** currTaskAddress;
 extern uint32_t** nextTaskAddress;
 
+extern int preemptDepth;
+extern int currLoopIndex;
+
 extern volatile uint32_t globalSystemTicks;
 extern void yieldCurrentTask(void);
 
@@ -57,6 +66,7 @@ extern void yieldCurrentTask(void);
 extern TaskControlBlock taskControlBlocks[MAX_TASKS];
 extern int activeTasks;
 extern void decideNextInterruptTask(TaskControlBlock* interruptTask);
+extern void decideNextScheduledTask();
 
 extern "C" bool switchPending;
 
