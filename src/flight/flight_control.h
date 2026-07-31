@@ -1,6 +1,7 @@
 #ifndef FLIGHT_CONTROL_H
 #define FLIGHT_CONTROL_H
 
+#include <cstring>
 #include <stdint.h>
 #include "../rtos/rtos.h"
 #include <string>
@@ -8,6 +9,8 @@
 #include "stm32f7xx.h"
 
 #ifdef __cplusplus //this section is completely HIDDEN from the C compiler (main.c)
+#define TOTAL_BATTERY_MAH 1600 //add to cli
+#define EVENT_MSG_LEN 64
 
 enum class FlightState : uint8_t {
     DISARMED, //calculations running, DShot motor output forced to 0/Idle-disabled
@@ -28,10 +31,17 @@ inline std::string to_string(volatile FlightState state) {
     }
 }
 
+inline void setEventMessage(char* dest, std::string_view src) {
+    std::size_t len = src.size() < EVENT_MSG_LEN - 1 ? src.size() : EVENT_MSG_LEN - 1;
+    std::memcpy(dest, src.data(), len);
+    dest[len] = '\0';
+}
+
 struct WARN { //add warnings and their signal to the pilot via the OSD
-    static constexpr std::string_view LOW_BATTERY = "LOW BATTERY DETECTED: LAND NOW\n";
-    static constexpr std::string_view ARMED_ANGLE = "PLACE DRONE ON A FLAT SURFACE TO ARM\n";
-    static constexpr std::string_view ARMED_THROTTLE = "PUSH THROTTLE TO 0 TO ARM\n";
+    static constexpr std::string_view LOW_BATTERY = "LOW BATTERY DETECTED: LAND NOW!\n";
+    static constexpr std::string_view ARMED_ANGLE = "PLACE DRONE ON A FLAT SURFACE TO ARM!\n";
+    static constexpr std::string_view ARMED_THROTTLE = "PUSH THROTTLE TO 0 TO ARM!\n";
+    static constexpr std::string_view BARO_NO_RESPONSE = "BAROMETER NOT RESPONDING: ALTITUDE INVALID!\n";
 };
 
 struct FAILSAFE { //add failsafe messages
@@ -39,13 +49,11 @@ struct FAILSAFE { //add failsafe messages
 };
 
 struct ERROR {
-    static constexpr std::string_view INIT_HEAP_MEN = "Out of Heap Memory allocating task stack\n";
-
-    //overflows
-    // static constexpr std::string_view STACK_OVERFLOW = ;
-    static std::string STACK_OVERFLOW() { return "STACK OVERFLOW DETECTED! Index: " + std::to_string(currLoopIndex) + "\n"; };
-    static std::string PREEMPT_OVERFLOW() { return "PREEMPT STACK OVERFLOW! Depth: " + std::to_string(preemptDepth) + "\n";}
-    static std::string GUARD_BREACH() { return "TOP GUARD BREACH! Index: " + std::to_string(currLoopIndex) + "\n"; };
+    static constexpr std::string_view INIT_HEAP_MEM = "OUT OF HEAP MEMORY ALLOCATING TASK STACK\n";
+    static constexpr std::string_view STACK_OVERFLOW = "STACK OVERFLOW DETECTED!\n";
+    static constexpr std::string_view PREEMPT_OVERFLOW = "PREEMPT STACK OVERFLOW!\n";
+    static constexpr std::string_view GUARD_BREACH = "TOP GUARD BREACH!\n";
+    static constexpr std::string_view CRSF_CORRUPT_STREAM = "CORRUPTED DATA INPUT STREAM!\n";
 };
 
 struct DroneState {
@@ -77,13 +85,13 @@ struct DroneState {
     float attitudeYaw;
 
     //protection safes
-    std::string warnMSG; //used for warning the pilot about drone stats - needs attention - uses same log and osd message
-    std::string failsafeMSG; //used to force disarm the drone completely - drone state critical - prints simplified message on OSD + logs drone stats
-    std::string errorMSG; //also used to force disarm the drone - code threw exeption/error occured during runtime - prints "error + id" + logs all details
+    char warnMSG[EVENT_MSG_LEN]; //used for warning the pilot about drone stats - needs attention - uses same log and osd message
+    char failsafeMSG[EVENT_MSG_LEN]; //used to force disarm the drone completely - drone state critical - prints simplified message on OSD + logs drone stats
+    char errorMSG[EVENT_MSG_LEN]; //also used to force disarm the drone - code threw exeption/error occured during runtime - prints "error + id" + logs all details
 
     //system health
-    uint16_t batteryVoltage;
-    uint16_t batteryCurrent;
+    float batteryVoltage;
+    float batteryCurrent;
     uint32_t batteryCapacityUsed;
     uint8_t batteryPerecent;
 
@@ -112,6 +120,15 @@ struct HardwarePinMap {
     GPIO_TypeDef* imu_cs_port;
     uint16_t imu_cs_pin;
 
+    //baro logic
+    SPI_TypeDef* baro_spi;
+    DMA_Stream_TypeDef* baro_dma_stream;
+    uint32_t baro_dma_channel;
+    GPIO_TypeDef* baro_cs_port;
+    uint16_t baro_cs_pin;
+    uint32_t baro_dma_stream_num;
+
+    //batery logic
     ADC_TypeDef* battery_adc;
     DMA_Stream_TypeDef* battery_dma_stream;
     uint32_t battery_voltage_channel;
@@ -124,9 +141,7 @@ struct HardwarePinMap {
     DMA_Stream_TypeDef* motor3_dma_stream;
     DMA_Stream_TypeDef* motor4_dma_stream;
 
-    SPI_TypeDef* osd_spi;
-    GPIO_TypeDef* osd_cs_port;
-    uint16_t osd_cs_pin;
+    USART_TypeDef* osd_uart;
 
     //peripheral GPIOB pins to hardware map (led, buzzer etc.)
     GPIO_TypeDef* status_led_port;
@@ -137,6 +152,12 @@ struct HardwarePinMap {
 
     //gps unit
     USART_TypeDef* gps_uart;
+
+    USART_TypeDef* log_uart;
+
+#if SIMULATION && DEBUG
+
+#endif
 };
 
 
@@ -150,14 +171,22 @@ inline HardwarePinMap currentBoardConfig = { //ensure to configure this properly
     .crsf_dma_channel = 4,
 
     //imu data streams
-    .imu_dma_stream = DMA2_Stream0,
-    .imu_spi         = SPI1,
-    .imu_spi_dma_channel  = 3,
-    .imu_cs_port     = GPIOA,
-    .imu_cs_pin      = GPIO_PIN_4,
+    .imu_dma_stream = DMA1_Stream0, //UPDATE STMCUBEMX
+    .imu_spi = SPI3,
+    .imu_spi_dma_channel = 0,
+    .imu_cs_port = GPIOA,
+    .imu_cs_pin = GPIO_PIN_4,
+
+    //baro streams
+    .baro_spi = SPI2,
+    .baro_dma_stream = DMA1_Stream3,
+    .baro_dma_channel = 3,
+    .baro_cs_port = GPIOD,
+    .baro_cs_pin = GPIO_PIN_2,
+    .baro_dma_stream_num = 3,
 
     //battery data streams
-    .battery_adc     = ADC1,
+    .battery_adc = ADC1, //timer
     .battery_dma_stream = DMA2_Stream0,
     .battery_voltage_channel = ADC_CHANNEL_10,
     .battery_current_channel = ADC_CHANNEL_11,
@@ -170,18 +199,26 @@ inline HardwarePinMap currentBoardConfig = { //ensure to configure this properly
     .motor4_dma_stream = DMA2_Stream4,
 
     //osd
-    .osd_spi     = SPI2,
-    .osd_cs_port = GPIOB,
-    .osd_cs_pin  = GPIO_PIN_12,
+    .osd_uart = USART6,
 
     //peripheral gpiob pins (misc for power)
     .status_led_port = GPIOB,
     .status_led_pin  = GPIO_PIN_0,
 
-    .buzzer_port     = GPIOB,
-    .buzzer_pin      = GPIO_PIN_1,
+    .buzzer_port = GPIOC,
+    .buzzer_pin = GPIO_PIN_1,
 
-    .gps_uart = USART3
+    .gps_uart = USART3,
+
+#if defined(SIMULATION) && defined(DEBUG)
+    .log_uart = USART3
+#endif
+};
+
+struct ActualRateConfig {
+    float centerRate = 200.0f;
+    float maxRate    = 670.0f;
+    float expo       = 0.5f;
 };
 
 //make all tasks public to main.cpp
@@ -202,10 +239,11 @@ extern void flightLoop();
 [[noreturn]] extern void imuControlLoop();
 [[noreturn]] extern void iwdgTask();
 [[noreturn]] extern void updatePeripherals();
-[[noreturn]] extern void telemetryTX();
-[[noreturn]] extern void osdUpdate();
 [[noreturn]] extern void gpsParser();
 [[noreturn]] extern void usbCLI();
+[[noreturn]] extern void osdUpdate();
+[[noreturn]] extern void readBarometerRegisters();
+[[noreturn]] extern void checkStackHealth();
 
 
 #endif // __cplusplus
@@ -217,10 +255,27 @@ extern "C" {
 
 extern DroneState drone;
 
-extern uint8_t batteryTX[8];
-extern uint8_t flightModeTX[1];
-extern uint8_t gpsTX[15];
 extern volatile uint16_t batteryADCBuffer[2];
+
+constexpr uint8_t MSP_DP_RELEASE = 0x00;
+constexpr uint8_t MSP_DP_WRITE   = 0x01;
+constexpr uint8_t MSP_DP_DRAW    = 0x04;
+
+//position buffer data
+//row, col
+extern uint8_t batVolPos[2];
+extern uint8_t batCurPos[2];
+extern uint8_t batMahPos[2];
+
+extern uint8_t gpsLatPos[2];
+extern uint8_t gpsLonPos[2];
+extern uint8_t gpsAltPos[2];
+extern uint8_t gpsSpdPos[2];
+extern uint8_t gpsSatPos[2];
+
+extern uint8_t drnMsgPos[2];
+
+extern uint8_t baroBuffer[6];
 
 #ifdef __cplusplus
 }

@@ -117,13 +117,13 @@ Once you have modified `User_Tasks/user_tasks.cpp` with your own loops, you must
   * `PendSV_Handler.S` - Core assembly routine saving/restoring CPU context registers (**R4-R11**).
 
 ### Roadmap: 
-| Phase | Name                 | Description                                                                            | Status            |
-|-------|----------------------|----------------------------------------------------------------------------------------|-------------------|
-| #1    | Custom RTOS Kernel   | Execute both **preemptive** and **cooperative** tasks with a priority-based system     | ***Complete***    |
-| #2    | Flight Dynamics      | **PT1** Low-Pass Filtering, **Axis Alignment** Mapping, OSD Warn **State Machine**     | ***In Progress*** |
-| #3    | Controller Loops     | High rate **PID** controller loop and **DShot** generation                             | ***Not Started*** |
-| #4    | Hardware Integration | Full Software-In-Loop (SIL) simulation for the ESC and transmitter modules             | ***Not Started*** |
-| #5    | User Features        | CLI for config, CPP bootloader for microcontrollers, USBC integration for bench testing | ***Not Started*** |
+| Phase | Name                 | Description                                                                              | Status            |
+|-------|----------------------|------------------------------------------------------------------------------------------|-------------------|
+| #1    | Custom RTOS Kernel   | Execute both **preemptive** and **cooperative** tasks with a priority-based system       | ***Complete***    |
+| #2    | Flight Dynamics      | **PT1** Low-Pass Filtering, **Axis Alignment** Mapping, OSD Warn **State Machine**       | ***Complete***    |
+| #3    | Controller Loops     | High rate **PID** controller loop and **DShot** generation                               | ***Complete***    |
+| #4    | Hardware Integration | Full Software-In-Loop (SIL) simulation for the ESC and transmitter modules               | ***In Progress*** |
+| #5    | User Features        | CLI for config, CPP bootloader for microcontrollers, USBC integration for bench testing  | ***In Progress*** |
 
 As for a timeline, I am hoping to get the entire system done before around July 27th. Of course when my friend finishes the hardware portion of the project, we will merge the custom PCBs and the operating system to create a fully functional high-speed drone. 
 

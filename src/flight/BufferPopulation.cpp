@@ -25,6 +25,8 @@ void startIMU_DMARead() {
         DMA2->HIFCR = 0x3D << ((reinterpret_cast<uint32_t>(currentBoardConfig.imu_dma_stream) - DMA2_Stream4_BASE) / 0x18 * 6);
     }
 
+    // DMA1->LIFCR = 0x3D;
+
     currentBoardConfig.imu_dma_stream->PAR  = reinterpret_cast<uint32_t>(&currentBoardConfig.imu_spi->DR); // was missing entirely before
     currentBoardConfig.imu_dma_stream->M0AR = reinterpret_cast<uint32_t>(imuRawBuffer);
     currentBoardConfig.imu_dma_stream->NDTR = 12;
@@ -139,6 +141,7 @@ void startMotor4_DMATransfer() {
     currentBoardConfig.motor4_dma_stream->CR |= DMA_SxCR_TCIE | DMA_SxCR_EN;
 }
 
+//battery dma
 void startBatteryADC_DMA() {
     currentBoardConfig.battery_dma_stream->CR &= ~DMA_SxCR_TCIE;
     currentBoardConfig.battery_dma_stream->PAR = reinterpret_cast<uint32_t>(&(currentBoardConfig.battery_adc->DR));
@@ -156,4 +159,53 @@ void startBatteryADC_DMA() {
     currentBoardConfig.battery_adc->CR2 |= ADC_CR2_DMA | ADC_CR2_DDS;
     currentBoardConfig.battery_adc->CR2 |= ADC_CR2_ADON;
     currentBoardConfig.battery_adc->CR2 |= ADC_CR2_SWSTART;
+}
+
+//battery methods
+ADCPacket injectBatteryADCBuffer() {
+    ADCPacket adcPacket = {0};
+    const uint16_t rawVoltageAdcValue = batteryADCBuffer[0]; //get latest values from circular dma buffer
+    const uint16_t rawCurrentAdcValue = batteryADCBuffer[1];
+
+    adcPacket.bytes[0] = rawVoltageAdcValue;
+    adcPacket.bytes[1] = rawCurrentAdcValue;
+
+    return adcPacket;
+}
+
+//barometer logic:
+//helper function to clear DMA stream interrupt flags dynamically
+static void clearBaroDMAFlags() {
+    const uint32_t streamIndex = currentBoardConfig.baro_dma_stream_num; // 0 to 7
+
+    if (streamIndex == 0)      { DMA2->LIFCR = DMA_LIFCR_CTCIF0 | DMA_LIFCR_CHTIF0 | DMA_LIFCR_CTEIF0; }
+    else if (streamIndex == 1) { DMA2->LIFCR = DMA_LIFCR_CTCIF1 | DMA_LIFCR_CHTIF1 | DMA_LIFCR_CTEIF1; }
+    else if (streamIndex == 2) { DMA2->LIFCR = DMA_LIFCR_CTCIF2 | DMA_LIFCR_CHTIF2 | DMA_LIFCR_CTEIF2; }
+    else if (streamIndex == 3) { DMA2->LIFCR = DMA_LIFCR_CTCIF3 | DMA_LIFCR_CHTIF3 | DMA_LIFCR_CTEIF3; }
+    else if (streamIndex == 4) { DMA2->HIFCR = DMA_HIFCR_CTCIF4 | DMA_HIFCR_CHTIF4 | DMA_HIFCR_CTEIF4; }
+    else if (streamIndex == 5) { DMA2->HIFCR = DMA_HIFCR_CTCIF5 | DMA_HIFCR_CHTIF5 | DMA_HIFCR_CTEIF5; }
+    else if (streamIndex == 6) { DMA2->HIFCR = DMA_HIFCR_CTCIF6 | DMA_HIFCR_CHTIF6 | DMA_HIFCR_CTEIF6; }
+    else if (streamIndex == 7) { DMA2->HIFCR = DMA_HIFCR_CTCIF7 | DMA_HIFCR_CHTIF7 | DMA_HIFCR_CTEIF7; }
+}
+
+void startBaro_DMATransfer() {
+    currentBoardConfig.baro_dma_stream->CR &= ~DMA_SxCR_EN;
+    while (currentBoardConfig.baro_dma_stream->CR & DMA_SxCR_EN) {}
+
+    currentBoardConfig.baro_dma_stream->PAR = reinterpret_cast<uint32_t>(&(currentBoardConfig.baro_spi->DR));
+    currentBoardConfig.baro_dma_stream->M0AR = reinterpret_cast<uint32_t>(baroBuffer);
+
+    currentBoardConfig.baro_dma_stream->NDTR = 6;
+
+    clearBaroDMAFlags();
+    uint32_t crValue = currentBoardConfig.baro_dma_stream->CR;
+
+    crValue &= ~(DMA_SxCR_DIR | DMA_SxCR_PSIZE | DMA_SxCR_MSIZE | DMA_SxCR_MINC);
+    crValue |= DMA_SxCR_MINC | DMA_SxCR_TCIE;
+
+    currentBoardConfig.baro_dma_stream->CR = crValue;
+    currentBoardConfig.baro_spi->CR2 |= SPI_CR2_RXDMAEN;
+    while (!(currentBoardConfig.baro_spi->SR & SPI_SR_TXE)) {}
+    currentBoardConfig.baro_spi->DR = (0x04 | 0x80);
+    currentBoardConfig.baro_dma_stream->CR |= DMA_SxCR_EN; //enable
 }

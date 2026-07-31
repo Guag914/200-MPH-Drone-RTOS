@@ -1,5 +1,4 @@
 #!/bin/bash
-
 SIM_FLAG="OFF"
 USER_FLAG="OFF"
 DEBUG_FLAG="OFF"
@@ -7,7 +6,6 @@ DEBUG_FLAG="OFF"
 # Parse arguments
 MODE=""
 DEBUG_ARG=""
-
 for arg in "$@"; do
     if [ "$arg" == "sim" ] || [ "$arg" == "user" ]; then
         MODE="$arg"
@@ -37,36 +35,27 @@ fi
 mkdir -p bin
 
 # Build profile 1
-cmake \
--DCMAKE_BUILD_TYPE=Debug \
--DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake \
--DENABLE_SIM_MODE=$SIM_FLAG \
--DENABLE_USER_TASKS=$USER_FLAG \
--DENABLE_DEBUG=$DEBUG_FLAG \
--G Ninja \
--S . \
--B cmake-build-debug
+cmake --preset drone-rtos-debug \
+  -DENABLE_SIM_MODE=$SIM_FLAG \
+  -DENABLE_USER_TASKS=$USER_FLAG \
+  -DENABLE_DEBUG=$DEBUG_FLAG
 
 if [ $? -ne 0 ]; then exit 1; fi
-cmake --build cmake-build-debug --clean-first -j10
+cmake --build build-drone-rtos --clean-first -j10
 
 # Build profile 2
-cmake \
--DCMAKE_BUILD_TYPE=Debug \
--DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake \
--DENABLE_SIM_MODE=$SIM_FLAG \
--DENABLE_USER_TASKS=$USER_FLAG \
--DENABLE_DEBUG=$DEBUG_FLAG \
--G Ninja \
--S . \
--B cmake-build-debug-1
+cmake --preset drone-rtos-debug \
+  -DENABLE_SIM_MODE=$SIM_FLAG \
+  -DENABLE_USER_TASKS=$USER_FLAG \
+  -DENABLE_DEBUG=$DEBUG_FLAG
 
 if [ $? -ne 0 ]; then exit 1; fi
-cmake --build cmake-build-debug-1 --target DRONE-RTOS --clean-first -j 10
+cmake --build build-drone-rtos --target DRONE-RTOS --clean-first -j 10
 
-# Post-build copy to bin directory
-if [ -f "cmake-build-debug-1/DRONE-RTOS.elf" ]; then
-    cp cmake-build-debug-1/DRONE-RTOS.elf bin/
+# Post-build copy to bin directory and generate disassembly
+if [ -f "build-drone-rtos/DRONE-RTOS.elf" ]; then
+    cp build-drone-rtos/DRONE-RTOS.elf bin/
+    arm-none-eabi-objdump -S bin/DRONE-RTOS.elf > bin/output.dis
 fi
 
 echo ""
@@ -77,4 +66,5 @@ echo "Simulation mode is $SIM_FLAG"
 echo "User task mode is $USER_FLAG"
 echo "Debug mode is $DEBUG_FLAG"
 echo "Binary location: ./bin/DRONE-RTOS.elf"
+echo "Disassembly location: ./bin/output.dis"
 echo "==================================="

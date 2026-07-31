@@ -3,6 +3,7 @@
 //
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <cstring>
 
@@ -108,6 +109,10 @@ static float rollErrorSum = 0.0f, lastRollError = 0.0f;
 static float pitchErrorSum = 0.0f, lastPitchError = 0.0f;
 static float yawErrorSum = 0.0f, lastYawError = 0.0f;
 
+static ActualRateConfig rollRateCfg  = { .centerRate = 200.0f, .maxRate = 670.0f, .expo = 0.5f };
+static ActualRateConfig pitchRateCfg = { .centerRate = 200.0f, .maxRate = 670.0f, .expo = 0.5f };
+static ActualRateConfig yawRateCfg   = { .centerRate = 200.0f, .maxRate = 670.0f, .expo = 0.5f };
+
 void flightLoop() { //make sure to forward values by usart
     //P - reacts to present error (proportional)
     //I - reacts to past accumulated error (Integral)
@@ -127,9 +132,10 @@ void flightLoop() { //make sure to forward values by usart
         return;
     }
 
-    const float targetRoll = drone.rollStick;
-    const float targetPitch = drone.pitchStick;
-    const float targetYaw = drone.yawStick;
+    //apply betaflight like rates
+    const float targetRoll = applyActualRates(drone.rollStick, rollRateCfg);
+    const float targetPitch = applyActualRates(drone.pitchStick, pitchRateCfg);
+    const float targetYaw = applyActualRates(drone.yawStick, yawRateCfg);
     const float targetThrottle = drone.throttleStick;
 
     const float rollError = targetRoll - drone.attitudeRoll;
@@ -156,17 +162,12 @@ void flightLoop() { //make sure to forward values by usart
     pitchErrorSum = std::clamp(pitchErrorSum, -100.0f, 100.0f);
     yawErrorSum = std::clamp(yawErrorSum, -100.0f, 100.0f);
 
+    const float baseThrottle = targetThrottle * 2000.0f;
     //mixer for dshot600 commands - adjust direction based upon which motors spin ccw vs cw
-    drone.motorOutput[0] =  + targetThrottle + pitchOutput + rollOutput - yawOutput; //front left
-    drone.motorOutput[1] =  + targetThrottle + pitchOutput - rollOutput + yawOutput; //front right
-    drone.motorOutput[2] =  + targetThrottle - pitchOutput + rollOutput + yawOutput; //back left
-    drone.motorOutput[3] =  + targetThrottle - pitchOutput - rollOutput - yawOutput; //back right
-
-    //clamp values
-    drone.motorOutput[0] = std::clamp(drone.motorOutput[0], 0.0f, 2000.0f);
-    drone.motorOutput[1] = std::clamp(drone.motorOutput[1], 0.0f, 2000.0f);
-    drone.motorOutput[2] = std::clamp(drone.motorOutput[2], 0.0f, 2000.0f);
-    drone.motorOutput[3] = std::clamp(drone.motorOutput[3], 0.0f, 2000.0f);
+    drone.motorOutput[0] = std::clamp(baseThrottle + pitchOutput + rollOutput - yawOutput, 0.0f, 2000.0f);
+    drone.motorOutput[1] = std::clamp(baseThrottle + pitchOutput - rollOutput + yawOutput, 0.0f, 2000.0f);
+    drone.motorOutput[2] = std::clamp(baseThrottle - pitchOutput + rollOutput + yawOutput, 0.0f, 2000.0f);
+    drone.motorOutput[3] = std::clamp(baseThrottle - pitchOutput - rollOutput - yawOutput, 0.0f, 2000.0f);
 
 #ifdef DEBUG
     printToUSART("Running Flight Loop: \n");
@@ -204,7 +205,7 @@ void crsfParsing() {
         if (crsfBuffer.bytes[0] != 0xC8) {//checks for corrupted data
 
             drone.currentSystemState = FlightState::ERROR;
-            drone.errorMSG = "[CRSF] Corrupted data input stream!\n";
+            setEventMessage(drone.errorMSG, ERROR::CRSF_CORRUPT_STREAM);
             yieldCurrentTask();
             continue;
         }
@@ -217,10 +218,15 @@ void crsfParsing() {
         const uint16_t ch5 = (crsfBuffer.bytes[8] >> 4 | crsfBuffer.bytes[9] << 4) & 0x07FF; //check this aux pos
 
         //convert stick positions into proper format (e.g. bound to -1.0f to 1.0f)
-        drone.rollStick = (static_cast<float>(ch1) - 992.0f) / 820.0f;
-        drone.pitchStick = (static_cast<float>(ch2) - 992.0f) / 820.0f;
-        drone.yawStick = (static_cast<float>(ch3) - 992.0f) / 820.0f;
-        drone.throttleStick = (static_cast<float>(ch4) - 172.0f) / 1639.0f;
+        const float normalizedRollStick = (static_cast<float>(ch1) - 992.0f) / 820.0f;
+        const float normalizedPitchStick = (static_cast<float>(ch2) - 992.0f) / 820.0f;
+        const float normalizedYawStick = (static_cast<float>(ch3) - 992.0f) / 820.0f;
+        const float noralizedThrottleStick = (static_cast<float>(ch4) - 172.0f) / 1639.0f;
+
+        drone.rollStick = normalizedRollStick;
+        drone.pitchStick = normalizedPitchStick;
+        drone.yawStick = normalizedYawStick;
+        drone.throttleStick = noralizedThrottleStick;
 
         drone.armed = ch5 > 1000;
 
@@ -253,7 +259,7 @@ void radioLinkFailSafe() {
         if (globalSystemTicks - drone.lastValidRCFrameTime > 500) {
             drone.armed = false;
             drone.currentSystemState = FlightState::FAILSAFE;
-            drone.failsafeMSG = FAILSAFE::CRSF_LOST;
+            setEventMessage(drone.failsafeMSG, FAILSAFE::CRSF_LOST);
         }
 #ifdef DEBUG
         printToUSART("Radio Link Failsafe: \n");
@@ -282,7 +288,7 @@ void lowLevelFailSafe() {
                 if (globalSystemTicks - lowVoltageStartTime > 5000) {
                     if (drone.currentSystemState == FlightState::ARMED) {
                         drone.currentSystemState = FlightState::WARN;
-                        drone.warnMSG = WARN::LOW_BATTERY;
+                        setEventMessage(drone.warnMSG, WARN::LOW_BATTERY);
                     }
                 }
             }
@@ -347,18 +353,14 @@ void powerManagement() { //becomes its own task as it will be used in multiple p
 
     while (true) {
         #ifdef SIMULATION
-            float voltage = (1670.0f + ((rand() % 40) - 20)) * (3.3f / 4095.0f) * VOLTAGE_DIVIDER_RATIO;
-            float currentVolts = (3100.0f + ((rand() % 60) - 30)) * (3.3f / 4095.0f);
-            float currentAmps = currentVolts / CURRENT_SENSOR_SCALE;
+            ADCPacket packet = injectMockBatteryADCBuffer();
         #else
-            const uint16_t rawVoltageAdcValue = batteryADCBuffer[0]; //get latest values from circular dma buffer
-            const uint16_t rawCurrentAdcValue = batteryADCBuffer[1];
-
-            // Convert raw values to actual Volts and Amps
-            float voltage = static_cast<float>(rawVoltageAdcValue) * (3.3f / 4095.0f) * VOLTAGE_DIVIDER_RATIO;
-            float currentVolts = static_cast<float>(rawCurrentAdcValue) * (3.3f / 4095.0f);
-            float currentAmps = currentVolts / CURRENT_SENSOR_SCALE;
+            ADCPacket packet = injectBatteryADCBuffer();
         #endif
+
+        const float voltage = packet.bytes[0] * (3.3f / 4095.0f) * VOLTAGE_DIVIDER_RATIO;
+        const float currentVolts = packet.bytes[1] * (3.3f / 4095.0f);
+        const float currentAmps = currentVolts / CURRENT_SENSOR_SCALE;
 
         //total capacity
         //used to compute hours since last measure
@@ -437,11 +439,11 @@ void flightStateMachine() {
                             drone.currentSystemState = FlightState::ARMED;
                         } else {
                             drone.currentSystemState = FlightState::WARN;
-                            drone.warnMSG = WARN::ARMED_ANGLE;
+                            setEventMessage(drone.warnMSG, WARN::ARMED_ANGLE);
                         }
                     } else {
                         drone.currentSystemState = FlightState::WARN;
-                        drone.warnMSG = WARN::ARMED_THROTTLE;
+                        setEventMessage(drone.warnMSG, WARN::ARMED_THROTTLE);
                     }
                 }
                 break;
@@ -451,15 +453,13 @@ void flightStateMachine() {
                 }
                 break;
             case FlightState::WARN:
-                printToUSART(drone.warnMSG.data()); //printing to osd is automatic
+                printToUSART(drone.warnMSG); //printing to osd is automatic
                 break;
             case FlightState::FAILSAFE:
-                printToUSART(drone.failsafeMSG.data()); //printing to osd is automatic
-                // drone.currentSystemState = FlightState::DISARMED;
+                printToUSART(drone.failsafeMSG); //printing to osd is automatic
                 break;
             case FlightState::ERROR:
-                printToUSART(drone.errorMSG.data()); //printing to osd is automatic
-                // drone.currentSystemState = FlightState::DISARMED;
+                printToUSART(drone.errorMSG); //printing to osd is automatic
                 break;
         }
 
@@ -468,9 +468,9 @@ void flightStateMachine() {
         printToUSART("  State: "); printToUSART(to_string(drone.currentSystemState).c_str()); printToUSART("\n\n");
 
         printToUSART(" [FSM] Errors: \n");
-        printToUSART("  Warn msg: "); printToUSART(drone.warnMSG.data()); printToUSART("\n");
-        printToUSART("  Error msg: "); printToUSART(drone.errorMSG.data()); printToUSART("\n");
-        printToUSART("  Failsafe msg: "); printToUSART(drone.failsafeMSG.data()); printToUSART("\n\n");
+        printToUSART("  Warn msg: "); printToUSART(drone.warnMSG); printToUSART("\n");
+        printToUSART("  Error msg: "); printToUSART(drone.errorMSG); printToUSART("\n");
+        printToUSART("  Failsafe msg: "); printToUSART(drone.failsafeMSG); printToUSART("\n\n");
 
         yieldCurrentTask();
     }
@@ -478,7 +478,7 @@ void flightStateMachine() {
 
 //master task for imu
 void imuControlLoop() { // one interrupt-zone task, triggered by real IMU DRDY eventually
-    yieldCurrentTask();
+    // yieldCurrentTask();
 
     while (true) {
         printToUSART("[IMU-CL] Start: \n");
@@ -571,130 +571,8 @@ void updatePeripherals() {
     }
 }
 
-//3 buffers
-uint8_t batteryTX[8];
-uint8_t flightModeTX[1];
-uint8_t gpsTX[15];
 
-void telemetryTX() {
-    yieldCurrentTask();
-
-    while (true) {
-        //handle battery transmitting
-        const auto voltage = static_cast<uint16_t>(drone.batteryVoltage * 10.0f);
-        const auto current = static_cast<uint16_t>(drone.batteryCurrent * 10.0f);
-        const auto capacityUsed = static_cast<uint32_t>(drone.batteryCapacityUsed * 10.0f);
-        const auto perecentage = static_cast<uint8_t>(drone.batteryPerecent);
-
-        batteryTX[0] = (voltage >> 8) & 0xFF;
-        batteryTX[1] = (voltage & 0xFF);
-
-        batteryTX[2] = (current >> 8) & 0xFF;
-        batteryTX[3] = (current & 0xFF);
-
-        batteryTX[4] = (capacityUsed >> 16) & 0xFF;
-        batteryTX[5] = (capacityUsed >> 8) & 0xFF;
-        batteryTX[6] = (capacityUsed & 0xFF);
-
-        batteryTX[7] = (perecentage) & 0xFF;
-
-        //handle flight mode handling
-        flightModeTX[0] = static_cast<uint8_t>(drone.currentSystemState) & 0xFF; //its already uint8_t
-
-        //handle gps values
-        const auto latitude = static_cast<int32_t>(drone.latitude * std::pow(10, 7));
-        const auto longitude = static_cast<int32_t>(drone.longitude * std::pow(10, 7));
-        const auto speed = static_cast<uint16_t>(drone.groundSpeed * 10);
-        const auto heading = static_cast<uint16_t>(drone.heading * 100);
-        const auto altitude = static_cast<uint16_t>(drone.altitude * 100);
-        const auto satellites = static_cast<uint8_t>(drone.satellites);
-
-        gpsTX[0] = (latitude >> 24) & 0xFF;
-        gpsTX[1] = (latitude >> 16) & 0xFF;
-        gpsTX[2] = (latitude >> 8) & 0xFF;
-        gpsTX[3] = (latitude & 0xFF);
-
-        gpsTX[4] = (longitude >> 24) & 0xFF;
-        gpsTX[5] = (longitude >> 16) & 0xFF;
-        gpsTX[6] = (longitude >> 8) & 0xFF;
-        gpsTX[7] = (longitude & 0xFF);
-
-        gpsTX[8] = (speed >> 8) & 0xFF;
-        gpsTX[9] = (speed & 0xFF);
-
-        gpsTX[10] = (heading >> 8) & 0xFF;
-        gpsTX[11] = (heading & 0xFF);
-
-        gpsTX[12] = (altitude >> 8) & 0xFF;
-        gpsTX[13] = (altitude & 0xFF);
-
-        gpsTX[14] = (satellites) & 0xFF;
-
-        //format the buffers with the checksums
-        uint8_t formattedBatteryTX[12];
-        uint8_t formattedFlightModeTX[5];
-        uint8_t formattedGPSTX[19];
-
-        const uint8_t formattedBatteryTXSize = formatCRSFFrame(0x08, batteryTX, 8, formattedBatteryTX);
-        const uint8_t formattedFlightModeTXSize = formatCRSFFrame(0x21, flightModeTX, 1, formattedFlightModeTX);
-        const uint8_t formattedGPSSize = formatCRSFFrame(0x02, gpsTX, 15, formattedGPSTX);
-
-#ifdef DEBUG
-        printToUSART("Telemetry TX: \n");
-        printToUSART(" [TXT-BAT] Battery: \n");
-        printToUSART("  Voltage: "); printToUSART(drone.batteryVoltage); printToUSART("\n");
-        printToUSART("  Current: "); printToUSART(drone.batteryCurrent); printToUSART("\n");
-        printToUSART("  Capacity: "); printToUSART(drone.batteryCapacityUsed); printToUSART("\n");
-        printToUSART("  Percent: "); printToUSART(drone.batteryPerecent); printToUSART("\n\n");
-
-        printToUSART(" [TXT-FLM] Flight Status: \n");
-        printToUSART("  Flight Mode: "); printToUSART(to_string(drone.currentSystemState).c_str()); printToUSART("\n");
-        printToUSART("  Warn msg: "); printToUSART(drone.warnMSG.data()); printToUSART("\n");
-        printToUSART("  Error msg: "); printToUSART(drone.errorMSG.data()); printToUSART("\n");
-        printToUSART("  Failsafe msg: "); printToUSART(drone.failsafeMSG.data()); printToUSART("\n\n");
-
-        printToUSART(" [TXT-GPS] Location: \n");
-        printToUSART("  Latitude: "); printToUSART(drone.latitude); printToUSART("\n");
-        printToUSART("  Longitude: "); printToUSART(drone.longitude); printToUSART("\n");
-        printToUSART("  Altitude: "); printToUSART(drone.altitude); printToUSART("\n\n");
-
-        printToUSART(" [TXT-GPS] Directionality: \n");
-        printToUSART("  Ground Speed (kph): "); printToUSART(drone.groundSpeed); printToUSART("\n");
-        printToUSART("  Heading: "); printToUSART(drone.heading); printToUSART("\n");
-        printToUSART("  Satellites: "); printToUSART(drone.satellites); printToUSART("\n\n\n");
-#endif
-
-        for (int i = 0; i < formattedBatteryTXSize; i++) {
-             while (!(currentBoardConfig.crsf_uart->ISR & USART_ISR_TXE)) {}
-             currentBoardConfig.crsf_uart->TDR = formattedBatteryTX[i];
-        }
-
-        for (int i = 0; i < formattedFlightModeTXSize; i++) {
-             while (!(currentBoardConfig.crsf_uart->ISR & USART_ISR_TXE)) {}
-             currentBoardConfig.crsf_uart->TDR = formattedFlightModeTX[i];
-        }
-
-        for (int i = 0; i < formattedGPSSize; i++) {
-             while (!(currentBoardConfig.crsf_uart->ISR & USART_ISR_TXE)) {}
-             currentBoardConfig.crsf_uart->TDR = formattedGPSTX[i];
-        }
-
-        //yield
-        yieldCurrentTask();
-    }
-}
-
-void osdUpdate() {
-    yieldCurrentTask();
-
-    while (true) {
-
-        //yield
-        yieldCurrentTask();
-    }
-}
-
-void gpsParser() {
+void gpsParser() { //add mock buffer stuff later
     static char sentenceBuffer[96];
     static uint8_t bufferIdx = 0;
 
@@ -818,14 +696,18 @@ void usbCLI() {
     static char commandBuffer[64];
     static uint8_t cmdIdx = 0;
 
-    printToUSART("\r\n=================================\r\n");
-    printToUSART("   DRONE RTOS FLIGHT TERMINAL   \r\n");
-    printToUSART("=================================\r\n# ");
+    //enable reciever, transmitter, and peripheral
+    currentBoardConfig.cli_uart->CR1 |= (USART_CR1_RE | USART_CR1_TE | USART_CR1_UE);
+
+    printToCLI("\r\n=================================\r\n");
+    printToCLI("   DRONE RTOS FLIGHT TERMINAL   \r\n");
+    printToCLI("=================================\r\n# ");
 
     yieldCurrentTask();
 
     while (true) {
         printToUSART("[USB-CLI] Command Line Active!\n\n");
+
         while (currentBoardConfig.cli_uart->ISR & USART_ISR_RXNE) { //wait for bytes
             char c = static_cast<char>(currentBoardConfig.cli_uart->RDR);
 
@@ -853,7 +735,7 @@ void usbCLI() {
                 commandBuffer[cmdIdx] = '\0';
 
                 if (cmdIdx > 0) {
-                    printToUSART("\r\n");
+                    printToCLI("\r\n");
 
                     //points to the next character after the last space
                     const char* numPtr = std::strrchr(commandBuffer, ' ');
@@ -861,111 +743,230 @@ void usbCLI() {
 
                     //system status
                     if (std::strncmp(commandBuffer, "status", 6) == 0) {
-                        printToUSART("[SYSTEM STATUS]\r\n");
-                        printToUSART("  Battery Voltage: "); printToUSART(drone.batteryVoltage); printToUSART(" V\r\n");
-                        printToUSART("  Flight State   : "); printToUSART(static_cast<uint32_t>(drone.currentSystemState)); printToUSART("\r\n");
-                        printToUSART("  Armed          : "); printToUSART(drone.armed); printToUSART("\r\n");
-                        printToUSART("  Sats Locked    : "); printToUSART(static_cast<uint32_t>(drone.satellites)); printToUSART("\r\n");
+                        printToCLI("[SYSTEM STATUS]\r\n");
+                        printToCLI("  Battery Voltage: "); printToCLI(drone.batteryVoltage); printToCLI(" V\r\n");
+                        printToCLI("  Flight State: "); printToCLI(static_cast<uint32_t>(drone.currentSystemState)); printToCLI("\r\n");
+                        printToCLI("  Armed: "); printToCLI(drone.armed); printToCLI("\r\n");
+                        printToCLI("  Sats Locked: "); printToCLI(static_cast<uint32_t>(drone.satellites)); printToCLI("\r\n");
                     }
 
                     //tune kp
                     else if (std::strncmp(commandBuffer, "set kp --roll", 13) == 0 || std::strncmp(commandBuffer, "set kp -r", 9) == 0) {
                         Kp_roll = parsedVal;
-                        printToUSART("Kp_roll updated to: "); printToUSART(Kp_roll); printToUSART("\r\n");
+                        printToCLI("Kp_roll updated to: "); printToCLI(Kp_roll); printToCLI("\r\n");
                     }
                     else if (std::strncmp(commandBuffer, "set kp --pitch", 14) == 0 || std::strncmp(commandBuffer, "set kp -p", 9) == 0) {
                         Kp_pitch = parsedVal;
-                        printToUSART("Kp_pitch updated to: "); printToUSART(Kp_pitch); printToUSART("\r\n");
+                        printToCLI("Kp_pitch updated to: "); printToCLI(Kp_pitch); printToCLI("\r\n");
                     }
                     else if (std::strncmp(commandBuffer, "set kp --yaw", 12) == 0 || std::strncmp(commandBuffer, "set kp -y", 9) == 0) {
                         Kp_yaw = parsedVal;
-                        printToUSART("Kp_yaw updated to: "); printToUSART(Kp_yaw); printToUSART("\r\n");
+                        printToCLI("Kp_yaw updated to: "); printToCLI(Kp_yaw); printToCLI("\r\n");
                     }
 
                     //tune ki
                     else if (std::strncmp(commandBuffer, "set ki --roll", 13) == 0 || std::strncmp(commandBuffer, "set ki -r", 9) == 0) {
                         Ki_roll = parsedVal;
-                        printToUSART("Ki_roll updated to: "); printToUSART(Ki_roll); printToUSART("\r\n");
+                        printToCLI("Ki_roll updated to: "); printToCLI(Ki_roll); printToCLI("\r\n");
                     }
 
                     else if (std::strncmp(commandBuffer, "set ki --pitch", 14) == 0 || std::strncmp(commandBuffer, "set ki -p", 9) == 0) {
                         Ki_pitch = parsedVal;
-                        printToUSART("Ki_pitch updated to: "); printToUSART(Ki_pitch); printToUSART("\r\n");
+                        printToCLI("Ki_pitch updated to: "); printToCLI(Ki_pitch); printToCLI("\r\n");
                     }
                     else if (std::strncmp(commandBuffer, "set ki --yaw", 12) == 0 || std::strncmp(commandBuffer, "set ki -y", 9) == 0) {
                         Ki_yaw = parsedVal;
-                        printToUSART("Ki_yaw updated to: "); printToUSART(Ki_yaw); printToUSART("\r\n");
+                        printToCLI("Ki_yaw updated to: "); printToCLI(Ki_yaw); printToCLI("\r\n");
                     }
 
                     //tune kd
                     else if (std::strncmp(commandBuffer, "set kd --roll", 13) == 0 || std::strncmp(commandBuffer, "set kd -r", 9) == 0) {
                         Kd_roll = parsedVal;
-                        printToUSART("Kd updated to: "); printToUSART(Kd_roll); printToUSART("\r\n");
+                        printToCLI("Kd updated to: "); printToCLI(Kd_roll); printToCLI("\r\n");
                     }
                     else if (std::strncmp(commandBuffer, "set kd --pitch", 14) == 0 || std::strncmp(commandBuffer, "set kd -p", 9) == 0) {
                         Kd_pitch = parsedVal;
-                        printToUSART("Kd_pitch updated to: "); printToUSART(Kd_pitch); printToUSART("\r\n");
+                        printToCLI("Kd_pitch updated to: "); printToCLI(Kd_pitch); printToCLI("\r\n");
                     }
                     else if (std::strncmp(commandBuffer, "set kd --yaw", 12) == 0 || std::strncmp(commandBuffer, "set kd -y", 9) == 0) {
                         Kd_yaw = parsedVal;
-                        printToUSART("Kd_yaw updated to: "); printToUSART(Kd_yaw); printToUSART("\r\n");
+                        printToCLI("Kd_yaw updated to: "); printToCLI(Kd_yaw); printToCLI("\r\n");
                     }
 
                     //inspect registers
                     else if (std::strncmp(commandBuffer, "get --pid", 9) == 0 || std::strncmp(commandBuffer, "get -p", 6) == 0) {
-                        printToUSART("[PID GAINS]\r\n");
-                        printToUSART("  Kp: "); printToUSART(Kp_roll); printToUSART("\r\n");
-                        printToUSART("  Ki: "); printToUSART(Ki_roll); printToUSART("\r\n");
-                        printToUSART("  Kd: "); printToUSART(Kd_roll); printToUSART("\r\n");
+                        printToCLI("[PID GAINS]\r\n");
+                        printToCLI("  Kp: "); printToCLI(Kp_roll); printToCLI("\r\n");
+                        printToCLI("  Ki: "); printToCLI(Ki_roll); printToCLI("\r\n");
+                        printToCLI("  Kd: "); printToCLI(Kd_roll); printToCLI("\r\n");
                     }
                     else if (std::strncmp(commandBuffer, "get --imu", 9) == 0 || std::strncmp(commandBuffer, "get -i", 6) == 0) {
-                        printToUSART("[IMU ATTITUDE]\r\n");
-                        printToUSART("  Roll : "); printToUSART(drone.attitudeRoll); printToUSART("\r\n");
-                        printToUSART("  Pitch: "); printToUSART(drone.attitudePitch); printToUSART("\r\n");
-                        printToUSART("  Yaw  : "); printToUSART(drone.attitudeYaw); printToUSART("\r\n");
+                        printToCLI("[IMU ATTITUDE]\r\n");
+                        printToCLI("  Roll: "); printToCLI(drone.attitudeRoll); printToCLI("\r\n");
+                        printToCLI("  Pitch: "); printToCLI(drone.attitudePitch); printToCLI("\r\n");
+                        printToCLI("  Yaw: "); printToCLI(drone.attitudeYaw); printToCLI("\r\n");
                     }
                     else if (std::strncmp(commandBuffer, "get --gps", 9) == 0 || std::strncmp(commandBuffer, "get -g", 6) == 0) {
-                        printToUSART("[GPS DATA]\r\n");
-                        printToUSART("  Lat : "); printToUSART(drone.latitude); printToUSART("\r\n");
-                        printToUSART("  Lon : "); printToUSART(drone.longitude); printToUSART("\r\n");
-                        printToUSART("  Alt : "); printToUSART(static_cast<uint32_t>(drone.altitude)); printToUSART(" m\r\n");
-                        printToUSART("  Sats: "); printToUSART(static_cast<uint32_t>(drone.satellites)); printToUSART("\r\n");
+                        printToCLI("[GPS DATA]\r\n");
+                        printToCLI("  Lat: "); printToCLI(drone.latitude); printToCLI("\r\n");
+                        printToCLI("  Lon: "); printToCLI(drone.longitude); printToCLI("\r\n");
+                        printToCLI("  Alt: "); printToCLI(static_cast<uint32_t>(drone.altitude)); printToCLI(" m\r\n");
+                        printToCLI("  Sats: "); printToCLI(static_cast<uint32_t>(drone.satellites)); printToCLI("\r\n");
                     }
                     else if (std::strncmp(commandBuffer, "get --motors", 12) == 0 || std::strncmp(commandBuffer, "get -m", 6) == 0) {
-                        printToUSART("[DSHOT MOTOR OUTPUTS]\r\n");
-                        printToUSART("  M1: "); printToUSART(drone.motorOutput[0]); printToUSART("\r\n");
-                        printToUSART("  M2: "); printToUSART(drone.motorOutput[1]); printToUSART("\r\n");
-                        printToUSART("  M3: "); printToUSART(drone.motorOutput[2]); printToUSART("\r\n");
-                        printToUSART("  M4: "); printToUSART(drone.motorOutput[3]); printToUSART("\r\n");
+                        printToCLI("[DSHOT MOTOR OUTPUTS]\r\n");
+                        printToCLI("  M1: "); printToCLI(drone.motorOutput[0]); printToCLI("\r\n");
+                        printToCLI("  M2: "); printToCLI(drone.motorOutput[1]); printToCLI("\r\n");
+                        printToCLI("  M3: "); printToCLI(drone.motorOutput[2]); printToCLI("\r\n");
+                        printToCLI("  M4: "); printToCLI(drone.motorOutput[3]); printToCLI("\r\n");
                     }
 
                     //system reboot
                     else if (std::strncmp(commandBuffer, "reboot", 6) == 0) {
-                        printToUSART("Rebooting MCU...\r\n");
+                        printToCLI("Rebooting MCU...\r\n");
                         NVIC_SystemReset();
                     }
 
                     //help menu
                     else if (std::strncmp(commandBuffer, "help", 4) == 0) {
-                        printToUSART("Available Commands:\r\n");
-                        printToUSART("  status                      - System telemetry & state\r\n");
-                        printToUSART("  get -p / get --pid          - Print all PID gains\r\n");
-                        printToUSART("  set kp -r / --roll <val>    - Update Roll Kp\r\n");
-                        printToUSART("  set kp -p / --pitch <val>   - Update Pitch Kp\r\n");
-                        printToUSART("  set kp -y / --yaw <val>     - Update Yaw Kp\r\n");
-                        printToUSART("  get -i / get --imu          - Print orientation\r\n");
-                        printToUSART("  get -g / get --gps          - Print GPS coordinates\r\n");
-                        printToUSART("  get -m / get --motors       - Print DShot outputs\r\n");
-                        printToUSART("  reboot                      - Software reset\r\n");
+                        printToCLI("Available Commands:\r\n");
+                        printToCLI("  status                                                          - System telemetry & state\r\n");
+                        printToCLI("  set kp <--roll, --pitch, --yaw, -r, -p, -y> <val>               - Update Kp Values\r\n");
+                        printToCLI("  set ki <--roll, --pitch, --yaw, -r, -p, -y> <val>               - Update Ki Values\r\n");
+                        printToCLI("  set kd <--roll, --pitch, --yaw, -r, -p, -y> <val>               - Update Kd Values\r\n");
+                        printToCLI("  get <--pid, -p>                                                 - Print all PID gains\r\n");
+                        printToCLI("  get <--imu, -i>                                                 - Print orientation\r\n");
+                        printToCLI("  get <--gps, -g>                                                 - Print GPS coordinates\r\n");
+                        printToCLI("  get <--motors, -m>                                              - Print DShot outputs\r\n");
+                        printToCLI("  reboot                                                          - Software reset\r\n");
+                        printToCLI("  set rate --roll <--max, --center, --expo, -m, -c, -e> <val>     - Update Roll Ratesr\r\n");
+                        printToCLI("  set rate --pitch <--max, --center, --expo, -m, -c, -e> <val>    - Update Pitch Ratesr\r\n");
+                        printToCLI("  set rate --yaw <--max, --center, --expo, -m, -c, -e> <val>      - Update Yaw Ratesr\r\n");
+                        printToCLI("  get <--imu-raw, -ir>                                            - Get IMU Values\r\n");
+                        printToCLI("  get <--imu-cal, -ic>                                            - Get IMU Calibration Values\r\n");
+                        printToCLI("  get <--baro, -b>                                                - Get Baro Values\r\n");
+                        printToCLI("  get <--crsf, -c>                                                - Get CRSF Values\r\n");
+                        printToCLI("  get <--batt, -bat>                                              - Get Battery Values\r\n");
+                        printToCLI("  get <--sys, -s>                                                 - Get System State Values\r\n");
                     }
+
+                    //set advanced max rates
+                    else if (std::strncmp(commandBuffer, "set rate --roll --max", 21) == 0 || std::strncmp(commandBuffer, "set rate -r -m", 14) == 0) {
+                        rollRateCfg.maxRate = parsedVal;
+                        printToCLI("Roll maxRate updated to: "); printToCLI(rollRateCfg.maxRate); printToCLI("\r\n");
+                    }
+                    else if (std::strncmp(commandBuffer, "set rate --pitch --max", 22) == 0 || std::strncmp(commandBuffer, "set rate -p -m", 14) == 0) {
+                        pitchRateCfg.maxRate = parsedVal;
+                        printToCLI("Pitch maxRate updated to: "); printToCLI(pitchRateCfg.maxRate); printToCLI("\r\n");
+                    }
+                    else if (std::strncmp(commandBuffer, "set rate --yaw --max", 20) == 0 || std::strncmp(commandBuffer, "set rate -y -m", 14) == 0) {
+                        yawRateCfg.maxRate = parsedVal;
+                        printToCLI("Yaw maxRate updated to: "); printToCLI(yawRateCfg.maxRate); printToCLI("\r\n");
+                    }
+
+                    //set advanced center rates
+                    else if (std::strncmp(commandBuffer, "set rate --roll --center", 24) == 0 || std::strncmp(commandBuffer, "set rate -r -c", 14) == 0) {
+                        rollRateCfg.centerRate = parsedVal;
+                        printToCLI("Roll centerRate updated to: "); printToCLI(rollRateCfg.centerRate); printToCLI("\r\n");
+                    }
+                    else if (std::strncmp(commandBuffer, "set rate --pitch --center", 25) == 0 || std::strncmp(commandBuffer, "set rate -p -c", 14) == 0) {
+                        pitchRateCfg.centerRate = parsedVal;
+                        printToCLI("Pitch centerRate updated to: "); printToCLI(pitchRateCfg.centerRate); printToCLI("\r\n");
+                    }
+                    else if (std::strncmp(commandBuffer, "set rate --yaw --center", 23) == 0 || std::strncmp(commandBuffer, "set rate -y -c", 14) == 0) {
+                        yawRateCfg.centerRate = parsedVal;
+                        printToCLI("Yaw centerRate updated to: "); printToCLI(yawRateCfg.centerRate); printToCLI("\r\n");
+                    }
+
+                    //set advanced expo rates
+                    else if (std::strncmp(commandBuffer, "set rate --roll --expo", 22) == 0 || std::strncmp(commandBuffer, "set rate -r -e", 14) == 0) {
+                        rollRateCfg.expo = parsedVal;
+                        printToCLI("Roll expo updated to: "); printToCLI(rollRateCfg.expo); printToCLI("\r\n");
+                    }
+                    else if (std::strncmp(commandBuffer, "set rate --pitch --expo", 23) == 0 || std::strncmp(commandBuffer, "set rate -p -e", 14) == 0) {
+                        pitchRateCfg.expo = parsedVal;
+                        printToCLI("Pitch expo updated to: "); printToCLI(pitchRateCfg.expo); printToCLI("\r\n");
+                    }
+                    else if (std::strncmp(commandBuffer, "set rate --yaw --expo", 21) == 0 || std::strncmp(commandBuffer, "set rate -y -e", 14) == 0) {
+                        yawRateCfg.expo = parsedVal;
+                        printToCLI("Yaw expo updated to: "); printToCLI(yawRateCfg.expo); printToCLI("\r\n");
+                    }
+
+                    //raw imu sensor state
+                    else if (std::strncmp(commandBuffer, "get --imu-raw", 13) == 0 || std::strncmp(commandBuffer, "get -ir", 7) == 0) {
+                        printToCLI("[RAW IMU DATA]\r\n");
+                        printToCLI("  Accel X: "); printToCLI(drone.accelRaw[0]); printToCLI(" g\r\n");
+                        printToCLI("  Accel Y: "); printToCLI(drone.accelRaw[1]); printToCLI(" g\r\n");
+                        printToCLI("  Accel Z: "); printToCLI(drone.accelRaw[2]); printToCLI(" g\r\n");
+                        printToCLI("  Gyro X: "); printToCLI(drone.gyroRaw[0]); printToCLI(" deg/s\r\n");
+                        printToCLI("  Gyro Y: "); printToCLI(drone.gyroRaw[1]); printToCLI(" deg/s\r\n");
+                        printToCLI("  Gyro Z: "); printToCLI(drone.gyroRaw[2]); printToCLI(" deg/s\r\n");
+                    }
+
+                    //calibrated imu & attitude state
+                    else if (std::strncmp(commandBuffer, "get --imu-cal", 13) == 0 || std::strncmp(commandBuffer, "get -ic", 7) == 0) {
+                        printToCLI("[CALIBRATED IMU & ATTITUDE]\r\n");
+                        printToCLI("  Calibrated Status: "); printToCLI(drone.calibrated ? "YES" : "NO"); printToCLI("\r\n");
+                        printToCLI("  Gyro Cal X: "); printToCLI(drone.gyroCalibrated[0]); printToCLI(" deg/s\r\n");
+                        printToCLI("  Gyro Cal Y: "); printToCLI(drone.gyroCalibrated[1]); printToCLI(" deg/s\r\n");
+                        printToCLI("  Gyro Cal Z: "); printToCLI(drone.gyroCalibrated[2]); printToCLI(" deg/s\r\n");
+                        printToCLI("  Estimated Roll "); printToCLI(drone.attitudeRoll); printToCLI(" deg\r\n");
+                        printToCLI("  Estimated Pitch: "); printToCLI(drone.attitudePitch); printToCLI(" deg\r\n");
+                        printToCLI("  Estimated Yaw: "); printToCLI(drone.attitudeYaw); printToCLI(" deg\r\n");
+                    }
+
+                    //barometer sensor state
+                    else if (std::strncmp(commandBuffer, "get --baro", 10) == 0 || std::strncmp(commandBuffer, "get -b", 6) == 0) {
+                        printToCLI("[BAROMETER SENSOR]\r\n");
+                        printToCLI("  Altitude: "); printToCLI(drone.altitude); printToCLI(" m\r\n");
+                    }
+
+                    //crsf radio receiver state
+                    else if (std::strncmp(commandBuffer, "get --crsf", 10) == 0 || std::strncmp(commandBuffer, "get -c", 6) == 0) {
+                        printToCLI("[CRSF LINK STATUS]\r\n");
+                        printToCLI("  Armed State: "); printToCLI(drone.armed ? "ARMED" : "DISARMED"); printToCLI("\r\n");
+                        printToCLI("  Roll Stick: "); printToCLI(drone.rollStick); printToCLI("\r\n");
+                        printToCLI("  Pitch Stick: "); printToCLI(drone.pitchStick); printToCLI("\r\n");
+                        printToCLI("  Yaw Stick: "); printToCLI(drone.yawStick); printToCLI("\r\n");
+                        printToCLI("  Throttle Stick: "); printToCLI(drone.throttleStick); printToCLI("\r\n");
+                        printToCLI("  Last Frame Age: "); printToCLI(globalSystemTicks - drone.lastValidRCFrameTime); printToCLI(" ms ago\r\n");
+                    }
+
+                    //battery & power monitoring
+                    else if (std::strncmp(commandBuffer, "get --batt", 10) == 0 || std::strncmp(commandBuffer, "get -bat", 8) == 0) {
+                        printToCLI("[BATTERY & POWER MONITOR]\r\n");
+                        printToCLI("  Voltage: "); printToCLI(drone.batteryVoltage); printToCLI(" V\r\n");
+                        printToCLI("  Current: "); printToCLI(drone.batteryCurrent); printToCLI(" A\r\n");
+                        printToCLI("  Capacity Used: "); printToCLI(drone.batteryCapacityUsed); printToCLI(" mAh\r\n");
+                        printToCLI("  Battery Level: "); printToCLI(static_cast<uint32_t>(drone.batteryPerecent)); printToCLI(" %\r\n");
+                    }
+
+                    //system & stack health summary
+                    else if (std::strncmp(commandBuffer, "get --sys", 9) == 0 || std::strncmp(commandBuffer, "get -s", 6) == 0) {
+                        printToCLI("[RTOS SYSTEM HEALTH]\r\n");
+                        printToCLI("  System State: "); printToCLI(to_string(drone.currentSystemState).c_str()); printToCLI("\r\n");
+                        printToCLI("  System Ticks: "); printToCLI(globalSystemTicks); printToCLI(" ms\r\n");
+                        printToCLI("  Active Tasks: "); printToCLI(static_cast<uint32_t>(activeTasks)); printToCLI("\r\n");
+
+                        printToCLI("  Task Stack High-Water Marks:\r\n");
+                        for (int i = 0; i < activeTasks; i++) {
+                            const uint32_t freeWords = getUnusedStackWords(i);
+                            const uint32_t totalSpace = taskControlBlocks[i].stackSizeWords;
+                            const uint32_t usedPercentage = 100 - ((freeWords * 100) / totalSpace);
+
+                            printToCLI("    - "); printToCLI(taskControlBlocks[i].taskName); printToCLI(": ");
+                            printToCLI(usedPercentage); printToCLI("% used\r\n");
+                        }
+                    }
+
                     else {
-                        printToUSART("Unknown command. Type 'help' for options.\r\n");
+                        printToCLI("Unknown command. Type 'help' for options.\r\n");
                     }
                 }
 
                 //reset buffer and output fresh prompt
                 cmdIdx = 0;
-                printToUSART("# ");
+                printToCLI("# ");
             }
             //store ASCII characters
             else if (cmdIdx < sizeof(commandBuffer) - 1 && c >= 32 && c <= 126) {
@@ -973,6 +974,240 @@ void usbCLI() {
             }
         }
 
+        yieldCurrentTask();
+    }
+}
+
+//flags
+// MSP_DP_RELEASE: 0x00;
+// MSP_DP_WRITE: 0x01;
+// MSP_DP_DRAW: 0x04;
+
+//position buffer data (for cli config)
+//row, col
+uint8_t batVolPos[2] = {15, 22};
+uint8_t batCurPos[2] = {16, 22};
+uint8_t batMahPos[2] = {17, 22};
+
+uint8_t gpsLatPos[2] = {18, 22};
+uint8_t gpsLonPos[2] = {19, 22};
+uint8_t gpsAltPos[2] = {20, 22};
+uint8_t gpsSpdPos[2] = {21, 22};
+uint8_t gpsSatPos[2] = {22, 22};
+
+uint8_t drnMsgPos[2] = {23, 22};
+
+void osdUpdate() {
+
+    char osdBuffer[32];
+    yieldCurrentTask(); //yield after init setup
+
+    while (true) {
+        //things to log:
+        //1. battery stats (voltage, mah left, and current)
+        //2. Lon/lat, direction to home (optional), speed, # of sattelites
+        //3. Warnings, errors, and failsafe messages, and flight state
+
+        uint8_t releaseCmd = MSP_DP_RELEASE; //convert to uint
+        sendMSPFrame(182, &releaseCmd, 1);
+
+        //battery
+        //special format for buffer size (make sure to not exceed 32 chars)
+        //snprintf(buf, size(buf), "TEXT: %FLAG", contents);
+        snprintf(osdBuffer, sizeof(osdBuffer), "BAT: %.1fV", drone.batteryVoltage);  //voltage
+        writeOSDString(batVolPos[0], batVolPos[1], osdBuffer);
+
+        snprintf(osdBuffer, sizeof(osdBuffer), "BAT: %.1fA", drone.batteryCurrent); //current (amps)
+        writeOSDString(batCurPos[0], batCurPos[1], osdBuffer);
+
+        float mahLeft = TOTAL_BATTERY_MAH - drone.batteryCapacityUsed;
+        snprintf(osdBuffer, sizeof(osdBuffer), "BAT: %.0fmAh", mahLeft);
+        writeOSDString(batMahPos[0], batMahPos[1], osdBuffer);
+
+        //gps
+        snprintf(osdBuffer, sizeof(osdBuffer), "LAT: %ld", drone.latitude);  //latitude
+        writeOSDString(gpsLatPos[0], gpsLatPos[1], osdBuffer);
+
+        snprintf(osdBuffer, sizeof(osdBuffer), "LON: %ld", drone.longitude);  //longitude
+        writeOSDString(gpsLonPos[0], gpsLonPos[1], osdBuffer);
+
+        snprintf(osdBuffer, sizeof(osdBuffer), "ALT: %d", drone.altitude);  //speed
+        writeOSDString(gpsAltPos[0], gpsAltPos[1], osdBuffer);
+
+        snprintf(osdBuffer, sizeof(osdBuffer), "SPD (KPH): %d", drone.groundSpeed);  //speed
+        writeOSDString(gpsSpdPos[0], gpsSpdPos[1], osdBuffer);
+
+        snprintf(osdBuffer, sizeof(osdBuffer), "SAT#: %d", drone.satellites);  //satellites
+        writeOSDString(gpsSatPos[0], gpsSatPos[1], osdBuffer);
+
+        if (drone.currentSystemState == FlightState::ERROR) { writeOSDString(drnMsgPos[0], drnMsgPos[1], drone.errorMSG); }
+        else if (drone.currentSystemState == FlightState::WARN) { writeOSDString(drnMsgPos[0], drnMsgPos[1], drone.warnMSG); }
+        else if (drone.currentSystemState == FlightState::FAILSAFE) { writeOSDString(drnMsgPos[0], drnMsgPos[1], drone.failsafeMSG); }
+
+        uint8_t drawCmd = MSP_DP_DRAW; //convert to uint
+        sendMSPFrame(182, &drawCmd, 1);
+
+
+#if DEBUG && SIMULATION
+        printToUSART("Osd Update: \n");
+
+        // --- Battery ---
+        printToUSART(" [OU] Battery Values:\n");
+
+        printToUSART("  Voltage, R"); printToUSART(batVolPos[0]);
+        printToUSART(", C"); printToUSART(batVolPos[1]);
+        printToUSART(", "); printToUSART(drone.batteryVoltage); printToUSART("\n");
+
+        printToUSART("  Current, R"); printToUSART(batCurPos[0]);
+        printToUSART(", C"); printToUSART(batCurPos[1]);
+        printToUSART(", "); printToUSART(drone.batteryCurrent); printToUSART("\n");
+
+        printToUSART("  mAh Left, R"); printToUSART(batMahPos[0]);
+        printToUSART(", C"); printToUSART(batMahPos[1]);
+        printToUSART(", "); printToUSART(mahLeft); printToUSART("\n\n");
+
+        // --- GPS ---
+        printToUSART(" [OU] GPS Values:\n");
+
+        printToUSART("  Latitude, R"); printToUSART(gpsLatPos[0]);
+        printToUSART(", C"); printToUSART(gpsLatPos[1]);
+        printToUSART(", "); printToUSART(drone.latitude); printToUSART("\n");
+
+        printToUSART("  Longitude, R"); printToUSART(gpsLonPos[0]);
+        printToUSART(", C"); printToUSART(gpsLonPos[1]);
+        printToUSART(", "); printToUSART(drone.longitude); printToUSART("\n");
+
+        printToUSART("  Altitude, R"); printToUSART(gpsAltPos[0]);
+        printToUSART(", C"); printToUSART(gpsAltPos[1]);
+        printToUSART(", "); printToUSART(drone.altitude); printToUSART("\n");
+
+        printToUSART("  Speed, R"); printToUSART(gpsSpdPos[0]);
+        printToUSART(", C"); printToUSART(gpsSpdPos[1]);
+        printToUSART(", "); printToUSART(drone.groundSpeed); printToUSART("\n");
+
+        printToUSART("  Sats, R"); printToUSART(gpsSatPos[0]);
+        printToUSART(", C"); printToUSART(gpsSatPos[1]);
+        printToUSART(", "); printToUSART(drone.satellites); printToUSART("\n\n");
+
+        // --- Message ---
+        printToUSART(" [OU] Message Values:\n");
+
+        const char* activeMsg = "NONE";
+        if (drone.currentSystemState == FlightState::ERROR) { activeMsg = drone.errorMSG; }
+        else if (drone.currentSystemState == FlightState::WARN) { activeMsg = drone.warnMSG; }
+        else if (drone.currentSystemState == FlightState::FAILSAFE) { activeMsg = drone.failsafeMSG; }
+
+        printToUSART("  System Msg, R"); printToUSART(drnMsgPos[0]);
+        printToUSART(", C"); printToUSART(drnMsgPos[1]);
+        printToUSART(", "); printToUSART(activeMsg); printToUSART("\n\n");
+#endif
+
+        yieldCurrentTask();
+    }
+}
+
+[[noreturn]] void logToBlackBox(); //MUST INCLUDE FOR LOGGING ERRORS AND EVERYTHING
+
+uint8_t baroBuffer[6]; //24 slots for each temp and pressure
+volatile float p0 = 101325.0f; //adjust in cli
+
+void readBarometerRegisters() {
+
+#ifdef SIMULATION
+   BaroTrim trim = initMockBarometer(); //call the init function
+#else
+    BaroTrim trim = initBarometer();
+#endif
+
+    //trim scaling:
+    static const float parT1 = static_cast<float>(trim.T1) * 256.0f; //trim.T1 / 2^-8
+    static const float parT2 = static_cast<float>(trim.T2) / 1073741824.0f; //trim.T2 / 2^30
+    static const float parT3 = static_cast<float>(trim.T3) / 281474976710656.0f; //trim.T3 / 2^48
+
+    static const float parP1 = (trim.P1-std::pow(2.0f, 14.0f))/std::pow(2.0f, 20.0f);
+    static const float parP2 = (trim.P2-std::pow(2.0f, 14.0f))/std::pow(2.0f, 29.0f);
+    static const float parP3 = trim.P3/std::pow(2.0f, 32.0f);
+    static const float parP4 = trim.P4/std::pow(2.0f, 37.0f);
+    static const float parP5 = trim.P5/std::pow(2.0f, -3.0f);
+    static const float parP6 = trim.P6/std::pow(2.0f, 6.0f);
+
+    static const float parP7 = static_cast<float>(trim.P7) / 256.0f; // trim.P7 / 2^8
+
+    static const float parP8 = trim.P8/std::pow(2.0f, 15.0f);
+    static const float parP9 = trim.P9/std::pow(2.0f, 48.0f);
+    static const float parP10 = trim.P10/std::pow(2.0f, 48.0f);
+    static const float parP11 = trim.P11/std::pow(2.0f, 65.0f);
+
+    yieldCurrentTask();
+
+    while (true) {
+
+        //uses dma to do everything
+        const uint32_t rawPressure = (baroBuffer[0] << 16) | (baroBuffer[1] << 8) | (baroBuffer[2]); //compile the 8 bit buffer into 24 bit
+        const uint32_t rawTemperature = (baroBuffer[3] << 16) | (baroBuffer[4] << 8) | (baroBuffer[5]);
+
+        //calculations
+        //compensate temperature:
+        const float partial1 = rawTemperature - parT1;
+        const float partial2 = partial1*parT2;
+        const float comp_temp = partial2 + (partial1*partial1)*parT3;
+
+        //compensate pressure:
+        const float partialT1 = parP6*comp_temp;
+        const float partialT2 = parP7*(comp_temp*comp_temp);
+        const float partialT3 = parP8*(comp_temp*comp_temp*comp_temp);
+        const float partialOut1 = parP5 + partialT1 + partialT2 + partialT3;
+
+        const float partialP1 = parP2*comp_temp;
+        const float partialP2 = parP3*(comp_temp*comp_temp);
+        const float partialP3 = parP4*(comp_temp*comp_temp*comp_temp);
+        const float partialOut2 = rawPressure*(parP1+partialP1 + partialP2 + partialP3);
+
+        const float partialD1 = (rawPressure*rawPressure)*(parP9+parP10*comp_temp);
+        const float partialD2 = partialD1 + (rawPressure*rawPressure*rawPressure)*parP11;
+
+        const float comp_press = partialOut1 + partialOut2 + partialD2;
+
+        const float altitude = 44330.0f*(1.0f-std::pow((comp_press/p0), 0.190295));
+
+        __disable_irq();
+        drone.altitude = altitude;
+        __enable_irq();
+
+#ifdef DEBUG
+        printToUSART("Read Barometer Registers\n");
+        printToUSART(" [RBR] Raw Values: \n");
+        printToUSART("  Raw Pressure: "); printToUSART(rawPressure); printToUSART("\n");
+        printToUSART("  Raw Temperature: "); printToUSART(rawTemperature); printToUSART("\n\n");
+
+        printToUSART(" [RBR] Calculated Values:\n");
+        printToUSART("  Partial_Out_1: "); printToUSART(partialOut1); printToUSART("\n");
+        printToUSART("  Partial_Out_2: "); printToUSART(partialOut2); printToUSART("\n");
+        printToUSART("  Comp_temp: "); printToUSART(comp_temp); printToUSART("\n");
+        printToUSART("  Comp_press: "); printToUSART(comp_press); printToUSART("\n\n");
+
+        printToUSART(" [RBR] Final Values: \n");
+        printToUSART("  Altitude: "); printToUSART(altitude); printToUSART("\n\n");
+#endif
+
+        yieldCurrentTask();
+    }
+}
+
+void checkStackHealth() {
+    yieldCurrentTask();
+    while (true) {
+        printToUSART("[CSH] Task Health Stats (% Used):\n");
+        for (int i = 0; i < activeTasks; i++) {
+            const uint32_t freeWords = getUnusedStackWords(i);
+            const uint32_t totalSpace = taskControlBlocks[i].stackSizeWords;
+            const uint32_t usedPercentage = 100 - (freeWords*100)/totalSpace;
+
+            printToUSART("  "); printToUSART(taskControlBlocks[i].taskName); printToUSART(": ");
+            printToUSART(usedPercentage); printToUSART("%\n");
+        }
+
+        printToUSART("\n");
         yieldCurrentTask();
     }
 }

@@ -6,8 +6,8 @@
 //this section is completely HIDDEN from the C compiler (main.c)
 #ifdef __cplusplus
 
-#define MAX_TASKS 14
-#define DEFAULT_MAX_STACK 1024
+#define MAX_TASKS 20
+#define DEFAULT_STACK 1024
 #define SYSTICK_BASE_ADDRESS (0xE000E010UL)
 
 enum class TaskState : uint8_t {
@@ -67,6 +67,7 @@ extern TaskControlBlock taskControlBlocks[MAX_TASKS];
 extern int activeTasks;
 extern void decideNextInterruptTask(TaskControlBlock* interruptTask);
 extern void decideNextScheduledTask();
+extern bool protectStackGuard(uint32_t guardBaseAddr);
 
 extern "C" bool switchPending;
 

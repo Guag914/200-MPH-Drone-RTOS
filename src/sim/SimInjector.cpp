@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include "../rtos/rtos.h"
 #include "../flight/flight_control.h"
+#include "../flight/Helpers.h"
 
 #include "cmsis_gcc.h"
 
@@ -87,4 +88,62 @@ CRSFPacket populateCRSFMockBuffer() {
     }
 
     return localContainer;
+}
+
+void updateMockBaroBuffer(float targetPressurePa, float targetTempC) {
+    // Approximate raw conversions for simulation
+    uint32_t mockRawPress = 6710886 + static_cast<uint32_t>((101325.0f - targetPressurePa) * 10.0f);
+    uint32_t mockRawTemp  = 6553600 + static_cast<uint32_t>(targetTempC * 100.0f);
+
+    // Add tiny random jitter (+/- 20 counts) to simulate physical noise
+    mockRawPress += (rand() % 41) - 20;
+
+    // Pack Pressure into bytes 0, 1, 2
+    baroBuffer[0] = static_cast<uint8_t>((mockRawPress >> 16) & 0xFF);
+    baroBuffer[1] = static_cast<uint8_t>((mockRawPress >> 8) & 0xFF);
+    baroBuffer[2] = static_cast<uint8_t>(mockRawPress & 0xFF);
+
+    // Pack Temperature into bytes 3, 4, 5
+    baroBuffer[3] = static_cast<uint8_t>((mockRawTemp >> 16) & 0xFF);
+    baroBuffer[4] = static_cast<uint8_t>((mockRawTemp >> 8) & 0xFF);
+    baroBuffer[5] = static_cast<uint8_t>(mockRawTemp & 0xFF);
+}
+
+BaroTrim initMockBarometer() {
+    BaroTrim mockTrim;
+
+    //temperature trim
+    mockTrim.T1 = 27850;
+    mockTrim.T2 = 19200;
+    mockTrim.T3 = -5;
+
+    //pressure trims for 101.3 kPa (sea level)
+    mockTrim.P1 = 16550;
+    mockTrim.P2 = 14000;
+    mockTrim.P3 = -3;
+    mockTrim.P4 = 1;
+    mockTrim.P5 = 12532;
+    mockTrim.P6 = 15000;
+    mockTrim.P7 = 8;
+    mockTrim.P8 = -2;
+    mockTrim.P9 = 3000;
+    mockTrim.P10 = 1;
+    mockTrim.P11 = -1;
+
+    // Raw sensor baseline
+    baroBuffer[0] = 0x66; baroBuffer[1] = 0x66; baroBuffer[2] = 0x66; //raw pressure ~6,710,886
+    baroBuffer[3] = 0x64; baroBuffer[4] = 0x00; baroBuffer[5] = 0x00; //raw temperature  ~6,553,600
+
+    return mockTrim;
+}
+
+ADCPacket injectMockBatteryADCBuffer() {
+    ADCPacket localADC = {0};
+    const float rawVoltage = (1670.0f + ((rand() % 40) - 20)) * (3.3f / 4095.0f);
+    const float rawCurrentVolts = (3100.0f + ((rand() % 60) - 30)) * (3.3f / 4095.0f);
+
+    localADC.bytes[0] = rawVoltage;
+    localADC.bytes[1] = rawCurrentVolts;
+
+    return localADC;
 }

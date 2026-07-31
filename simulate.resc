@@ -3,7 +3,10 @@ Clear
 mach create "stm32f756"
 machine LoadPlatformDescription @platforms/cpus/stm32f746.repl
 
-showAnalyzer sysbus.usart1
+showAnalyzer sysbus.usart3
+
+emulation CreateServerSocketTerminal 3456 "cliTerm"
+connector Connect sysbus.usart1 cliTerm
 
 sysbus LoadELF @bin/DRONE-RTOS.elf
 

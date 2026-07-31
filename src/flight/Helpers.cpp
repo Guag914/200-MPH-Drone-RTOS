@@ -3,9 +3,10 @@
 //
 
 #include "Helpers.h"
+
+#include <algorithm>
 #include <cmath>
 #include <cstring>
-
 #include "flight_control.h"
 
 #define GYRO_CUTOFF_HZ 90.0f //11.11 ms
@@ -96,6 +97,20 @@ DShotFrame generateDShotFrame(float throttleInput) {
     return frame;
 }
 
+//flight loop helpers
+// applyActualRates(drone.rollStick, rollRateCfg);
+
+float applyActualRates(float stick, const ActualRateConfig& config) {
+    stick = std::clamp(stick, -1.0f, 1.0f);
+    const float absStick = std::abs(stick);
+
+    const float expoFactor = (absStick * absStick * absStick * config.expo) + (absStick * (1.0f - config.expo));
+    const float rateDelta = std::max(0.0f, config.maxRate - config.centerRate); //calc delta
+    const float outputRate = (stick * config.centerRate) + (std::copysign(expoFactor, stick) * rateDelta);
+
+    return outputRate;
+}
+
 //gps helpers
 
 uint8_t crc8_dvb_s2(const uint8_t* data, uint8_t len) { //used to add a checksum at the end
@@ -148,4 +163,142 @@ int32_t parseNmeaCoord(const char* str, char dir) {
     }
 
     return static_cast<int32_t>(decimalDegrees * 1e7);
+}
+
+void writeOSDString(uint8_t row, uint8_t col, char* str) {
+    //create payload buffer (64)
+    //idx 0 = flag (write)
+    //1 = row
+    //2 = col
+    //3 = 0 (normal 'attrib')
+
+    //cast uint8 for each item
+    //sendMSPFrame
+
+    uint8_t payload[64];
+    uint8_t len = std::strlen(str); //gets the length of the string
+    uint8_t idx = 0;
+
+    payload[idx++] = MSP_DP_WRITE;
+    payload[idx++] = row;
+    payload[idx++] = col;
+    payload[idx++] = 0;
+
+    for (uint8_t i = 0; i < len; i++) { payload[i + 4] = static_cast<uint8_t>(str[i]); } //compile the char into uint_8 char by char
+
+    sendMSPFrame(182, payload, len + 4); //offset accounts for the headers
+}
+
+void sendMSPFrame(uint8_t cmd, const uint8_t* payload, uint8_t payloadLen) {
+    //create 64 frame buffer
+    //add $, M, <, payloadSize, and cmd starting at idx 0
+    //create the checksum by doing ^= payload[i]
+    //append checksum
+
+    //broadcast
+
+    uint8_t frame[64];
+    uint8_t idx = 0;
+
+    //header is always $M< - tells vt an incoming frame is starting followed by specifics
+    frame[idx++] = '$';
+    frame[idx++] = 'M';
+    frame[idx++] = '<';
+    frame[idx++] = payloadLen;
+    frame[idx++] = cmd;
+
+    uint8_t checksum = payloadLen ^ cmd;
+
+    for (uint8_t i = 0; i < payloadLen; i++) {
+        frame[idx++] = payload[i]; //appends payload to frameidx
+        checksum ^= payload[i]; //calculates checksum
+    }
+
+    //broadcast
+    for (uint8_t i = 0; i < idx; i++) {
+        while (!(currentBoardConfig.osd_uart->ISR & USART_ISR_TXE)) {}
+        currentBoardConfig.osd_uart->TDR = frame[i];
+    }
+}
+
+//baro helpers
+static uint8_t spi_transfer(SPI_TypeDef *SPIx, uint8_t data) {
+    while (!(SPIx->SR & SPI_SR_TXE)) {} //wait until transmit buffer is empty (ONLY USE FOR INIT because normal tasks use DMA)
+    SPIx->DR = data;
+    while (!(SPIx->SR & SPI_FLAG_RXNE)) {} //wait
+    return SPIx->DR;
+}
+
+static uint8_t baro_read_reg(SPI_TypeDef *SPIx, const uint8_t reg_addr) {
+    HAL_GPIO_WritePin(currentBoardConfig.baro_cs_port, currentBoardConfig.baro_cs_pin, GPIO_PIN_RESET); //cs low
+    spi_transfer(SPIx, reg_addr | 0x80); //send register address
+    const uint8_t val = spi_transfer(SPIx, 0x00); //send dummy byte
+    HAL_GPIO_WritePin(currentBoardConfig.baro_cs_port, currentBoardConfig.baro_cs_pin, GPIO_PIN_SET); //cs high
+
+    return val;
+}
+
+static uint16_t baro_read_reg16(SPI_TypeDef *SPIx, const uint8_t lsb_reg, const uint8_t msb_reg) {
+    const uint8_t lsb = baro_read_reg(SPIx, lsb_reg);
+    const uint8_t msb = baro_read_reg(SPIx, msb_reg);
+
+    return static_cast<uint16_t>((msb << 8) | lsb);
+}
+
+static void baro_write_reg(SPI_TypeDef *SPIx, uint8_t reg_addr, uint8_t data) {
+    HAL_GPIO_WritePin(currentBoardConfig.baro_cs_port, currentBoardConfig.baro_cs_pin, GPIO_PIN_RESET);
+    spi_transfer(SPIx, reg_addr & ~0x80); //clear bit 7 for WRITE mode
+    spi_transfer(SPIx, data);
+    HAL_GPIO_WritePin(currentBoardConfig.baro_cs_port, currentBoardConfig.baro_cs_pin, GPIO_PIN_SET);
+}
+
+BaroTrim initBarometer() {
+    uint8_t chipID = baro_read_reg(currentBoardConfig.baro_spi, 0x00);
+    if (chipID != 0x60) {  //verfy hardware communication
+        drone.currentSystemState = FlightState::WARN;
+        setEventMessage(drone.warnMSG, WARN::BARO_NO_RESPONSE);
+    }
+
+    //set up sock config vars in the baro
+    BaroTrim trim;
+    SPI_TypeDef *spi = currentBoardConfig.baro_spi;
+
+    //use external function with auto combined
+    trim.T1 = baro_read_reg16(spi, 0x31, 0x32);
+    trim.T2 = baro_read_reg16(spi, 0x33, 0x34);
+    trim.T3 = baro_read_reg(spi, 0x35);
+
+    trim.P1 = baro_read_reg16(spi, 0x36, 0x37);
+    trim.P2 = baro_read_reg16(spi, 0x38, 0x39);
+    trim.P3 = baro_read_reg(spi, 0x3A);
+    trim.P4 = baro_read_reg(spi, 0x3B);
+    trim.P5 = baro_read_reg16(spi, 0x3C, 0x3D);
+    trim.P6 = baro_read_reg16(spi, 0x3E, 0x3F);
+    trim.P7 = baro_read_reg(spi, 0x40);
+    trim.P8 = baro_read_reg(spi, 0x41);
+    trim.P9 = baro_read_reg16(spi, 0x42, 0x43);
+    trim.P10 = baro_read_reg(spi, 0x44);
+    trim.P11 = baro_read_reg(spi, 0x45);
+
+    baro_write_reg(spi, 0x1B, 0x33); //enable normal modes
+    baro_write_reg(spi, 0x1C, 0x02); //write OSR reg
+
+    return trim;
+}
+
+//task health task helper
+uint32_t getUnusedStackWords(const uint8_t taskIdx) {
+
+    const uint32_t* stack = taskControlBlocks[taskIdx].taskStack;
+    uint32_t unusedWords = 0;
+
+    for (int i = 8; i < taskControlBlocks[taskIdx].stackSizeWords; i++) {
+        if (stack[i] == 0xA5A5A5A5) {
+            unusedWords++;
+        } else {
+            break; //first overriten word found
+        }
+    }
+
+    return unusedWords;
 }

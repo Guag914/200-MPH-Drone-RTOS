@@ -4,7 +4,6 @@ setlocal enabledelayedexpansion
 set "SIM_FLAG=OFF"
 set "USER_FLAG=OFF"
 set "DEBUG_FLAG=OFF"
-
 set "MODE="
 set "DEBUG_ARG="
 
@@ -34,38 +33,30 @@ if "%DEBUG_ARG%"=="ON" (
 
 if not exist "bin" mkdir bin
 
-cmake ^
--DCMAKE_BUILD_TYPE=Debug ^
--DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake ^
--DENABLE_SIM_MODE=%SIM_FLAG% ^
--DENABLE_USER_TASKS=%USER_FLAG% ^
--DENABLE_DEBUG=%DEBUG_FLAG% ^
--G Ninja ^
--S . ^
--B cmake-build-debug
-
+rem Build profile 1
+cmake --preset drone-rtos-debug ^
+  -DENABLE_SIM_MODE=%SIM_FLAG% ^
+  -DENABLE_USER_TASKS=%USER_FLAG% ^
+  -DENABLE_DEBUG=%DEBUG_FLAG%
 if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
 
-cmake --build cmake-build-debug --clean-first -j10
+cmake --build build-drone-rtos --clean-first -j10
 if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
 
-cmake ^
--DCMAKE_BUILD_TYPE=Debug ^
--DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake ^
--DENABLE_SIM_MODE=%SIM_FLAG% ^
--DENABLE_USER_TASKS=%USER_FLAG% ^
--DENABLE_DEBUG=%DEBUG_FLAG% ^
--G Ninja ^
--S . ^
--B cmake-build-debug-1
-
+rem Build profile 2
+cmake --preset drone-rtos-debug ^
+  -DENABLE_SIM_MODE=%SIM_FLAG% ^
+  -DENABLE_USER_TASKS=%USER_FLAG% ^
+  -DENABLE_DEBUG=%DEBUG_FLAG%
 if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
 
-cmake --build cmake-build-debug-1 --target DRONE-RTOS --clean-first -j 10
+cmake --build build-drone-rtos --target DRONE-RTOS --clean-first -j 10
 if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
 
-if exist "cmake-build-debug-1\DRONE-RTOS.elf" (
-    copy /Y "cmake-build-debug-1\DRONE-RTOS.elf" "bin\"
+rem Post-build copy to bin directory and generate disassembly
+if exist "build-drone-rtos\DRONE-RTOS.elf" (
+    copy /Y "build-drone-rtos\DRONE-RTOS.elf" "bin\"
+    arm-none-eabi-objdump -S bin\DRONE-RTOS.elf > bin\output.dis
 )
 
 echo.
@@ -75,6 +66,7 @@ echo ENABLE_SIM_MODE=%SIM_FLAG%
 echo ENABLE_USER_TASKS=%USER_FLAG%
 echo ENABLE_DEBUG=%DEBUG_FLAG%
 echo Binary location: .\bin\DRONE-RTOS.elf
+echo Disassembly location: .\bin\output.dis
 echo ===================================
 
 endlocal

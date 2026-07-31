@@ -57,14 +57,16 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define Buzzer_Pin GPIO_PIN_1
+#define Buzzer_GPIO_Port GPIOC
 #define IMU_CS_Pin GPIO_PIN_4
 #define IMU_CS_GPIO_Port GPIOA
 #define IMU_CS2_Pin GPIO_PIN_4
 #define IMU_CS2_GPIO_Port GPIOC
+#define STATUS_LED_Pin GPIO_PIN_0
+#define STATUS_LED_GPIO_Port GPIOB
 #define OSD_CS_Pin GPIO_PIN_12
 #define OSD_CS_GPIO_Port GPIOB
-#define OSD_CS2_Pin GPIO_PIN_2
-#define OSD_CS2_GPIO_Port GPIOD
 
 /* USER CODE BEGIN Private defines */
 

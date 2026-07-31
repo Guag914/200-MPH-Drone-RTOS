@@ -12,6 +12,7 @@
 //use structs to hold returns so that cpp does not destroy local function variables
 struct IMURawPacket { uint8_t bytes[12]; };
 struct CRSFPacket { uint8_t bytes[26]; };
+struct ADCPacket { float bytes[2]; };
 
 // Global function declarations
 IMURawPacket populateIMUBuffer();
@@ -25,7 +26,10 @@ extern void startMotor2_DMATransfer();
 extern void startMotor3_DMATransfer();
 extern void startMotor4_DMATransfer();
 
+extern ADCPacket injectBatteryADCBuffer();
+
 extern void startBatteryADC_DMA();
+extern void startBaro_DMATransfer();
 
 extern uint8_t imuRawBuffer[12];
 extern uint8_t crsfRingBuffer[HW_UART_BUFFER_SIZE];
