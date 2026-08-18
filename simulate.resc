@@ -8,6 +8,12 @@ showAnalyzer sysbus.usart3
 emulation CreateServerSocketTerminal 3456 "cliTerm"
 connector Connect sysbus.usart1 cliTerm
 
+#emulation CreateServerSocketTerminal 3457 "crsfTerm"
+#connector testConnect sysbus.usart2 crsfTerm
+
+#emulation CreateServerSocketTerminal 3458 "gpsTerm"
+#connector Connect sysbus.usart3 gpsTerm
+
 sysbus LoadELF @bin/DRONE-RTOS.elf
 
 cpu VectorTableOffset 0x08000000

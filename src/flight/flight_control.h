@@ -3,7 +3,6 @@
 
 #include <cstring>
 #include <stdint.h>
-#include "../rtos/rtos.h"
 #include <string>
 #include <string_view>
 #include "stm32f7xx.h"
@@ -135,6 +134,7 @@ struct HardwarePinMap {
     uint32_t battery_current_channel;
 
     TIM_TypeDef* motor_timer;
+    TIM_TypeDef* motor3_timer;
 
     DMA_Stream_TypeDef* motor1_dma_stream;
     DMA_Stream_TypeDef* motor2_dma_stream;
@@ -152,21 +152,22 @@ struct HardwarePinMap {
 
     //gps unit
     USART_TypeDef* gps_uart;
+    DMA_Stream_TypeDef* gps_dma_stream;
+    uint32_t gps_dma_channel;
 
     USART_TypeDef* log_uart;
 
-#if SIMULATION && DEBUG
-
-#endif
+    SD_TypeDef* sdmmc_instance;
+    DMA_Stream_TypeDef* sd_rx_stream;
+    DMA_Stream_TypeDef* sd_tx_stream;
 };
-
 
 inline HardwarePinMap currentBoardConfig = { //ensure to configure this properly in stmcubemx software when getting real pinmaps
     //usb cli commands
     .cli_uart = USART1,
 
     //crsf data streams
-    .crsf_uart       = USART2,
+    .crsf_uart = USART2,
     .crsf_dma_stream = DMA1_Stream5,
     .crsf_dma_channel = 4,
 
@@ -182,7 +183,7 @@ inline HardwarePinMap currentBoardConfig = { //ensure to configure this properly
     .baro_dma_stream = DMA1_Stream3,
     .baro_dma_channel = 3,
     .baro_cs_port = GPIOD,
-    .baro_cs_pin = GPIO_PIN_2,
+    .baro_cs_pin = GPIO_PIN_3,
     .baro_dma_stream_num = 3,
 
     //battery data streams
@@ -193,9 +194,11 @@ inline HardwarePinMap currentBoardConfig = { //ensure to configure this properly
 
     //dshot motor timers + dma
     .motor_timer = TIM1, //map physical timer
+    .motor3_timer = TIM4,
+
     .motor1_dma_stream = DMA2_Stream1,
     .motor2_dma_stream = DMA2_Stream2,
-    .motor3_dma_stream = DMA2_Stream6,
+    .motor3_dma_stream = DMA1_Stream7,
     .motor4_dma_stream = DMA2_Stream4,
 
     //osd
@@ -209,10 +212,16 @@ inline HardwarePinMap currentBoardConfig = { //ensure to configure this properly
     .buzzer_pin = GPIO_PIN_1,
 
     .gps_uart = USART3,
+    .gps_dma_stream = DMA1_Stream1,
+    .gps_dma_channel = 4,
 
-#if defined(SIMULATION) && defined(DEBUG)
-    .log_uart = USART3
-#endif
+    #if defined(SIMULATION) && defined(DEBUG)
+        .log_uart = USART3,
+    #endif
+
+    .sdmmc_instance = SDMMC1,
+    .sd_rx_stream = DMA2_Stream3,
+    .sd_tx_stream = DMA2_Stream6,
 };
 
 struct ActualRateConfig {
@@ -244,7 +253,8 @@ extern void flightLoop();
 [[noreturn]] extern void osdUpdate();
 [[noreturn]] extern void readBarometerRegisters();
 [[noreturn]] extern void checkStackHealth();
-
+[[noreturn]] extern void logToBlackBox();
+[[noreturn]] extern void telemetryTX();
 
 #endif // __cplusplus
 
@@ -254,8 +264,6 @@ extern "C" {
 //this section is visible to BOTH core/src/main.c (C) and src/Main.cpp (C++)
 
 extern DroneState drone;
-
-extern volatile uint16_t batteryADCBuffer[2];
 
 constexpr uint8_t MSP_DP_RELEASE = 0x00;
 constexpr uint8_t MSP_DP_WRITE   = 0x01;
@@ -274,8 +282,6 @@ extern uint8_t gpsSpdPos[2];
 extern uint8_t gpsSatPos[2];
 
 extern uint8_t drnMsgPos[2];
-
-extern uint8_t baroBuffer[6];
 
 #ifdef __cplusplus
 }

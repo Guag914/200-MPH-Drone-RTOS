@@ -7,13 +7,13 @@
 #include <cmath>
 #include <cstring>
 
+#include "../sim/SimInjector.h"
 #include "./flight_control.h"
 #include "../rtos/rtos.h"
 #include "./BufferPopulation.h"
 #include "stm32f7xx.h"
 #include "Helpers.h"
-#include "../rtos/Logger.h"
-#include "../sim/SimInjector.h"
+#include "../rtos/logging/Logger.h"
 
 DroneState drone; //define drone struct
 
@@ -21,11 +21,7 @@ static float gyroBias[3] = {0.0f, 0.0f, 0.0f};
 
 void readIMUDataRegisters() {
     //function to populate the 14 registers starting at the start address
-    #ifdef SIMULATION
-    IMURawPacket rawIMUBuffer = populateIMUMockBuffer();
-    #else
-    IMURawPacket rawIMUBuffer = populateIMUBuffer();
-    #endif
+    IMURawPacket rawIMUBuffer = populateIMUBuffer(); //don't raw inject in order to test populateIMUBuffer
 
     __disable_irq();
     //reassemble registers into signed 16-bit integers
@@ -113,7 +109,7 @@ static ActualRateConfig rollRateCfg  = { .centerRate = 200.0f, .maxRate = 670.0f
 static ActualRateConfig pitchRateCfg = { .centerRate = 200.0f, .maxRate = 670.0f, .expo = 0.5f };
 static ActualRateConfig yawRateCfg   = { .centerRate = 200.0f, .maxRate = 670.0f, .expo = 0.5f };
 
-void flightLoop() { //make sure to forward values by usart
+void flightLoop() {
     //P - reacts to present error (proportional)
     //I - reacts to past accumulated error (Integral)
     //D - preducts future error (Derivative)
@@ -194,11 +190,7 @@ void crsfParsing() {
     yieldCurrentTask();
 
     while (true) {
-        #ifdef SIMULATION
-        CRSFPacket crsfBuffer =  populateCRSFMockBuffer();
-        #else
-        CRSFPacket crsfBuffer =  populateCRSFBuffer();
-        #endif
+        CRSFPacket crsfBuffer =  populateCRSFBuffer(); //don't raw inject in order to test populateCRSFBuffer
 
         if (crsfBuffer.bytes[0] == 0x00 && crsfBuffer.bytes[1] == 0x00) { yieldCurrentTask(); continue; }
 
@@ -248,6 +240,9 @@ void crsfParsing() {
 #endif
 
         drone.lastValidRCFrameTime = globalSystemTicks;
+
+        decideNextInterruptTask(&taskControlBlocks[4]); //calls flightstatemachine
+
         yieldCurrentTask();
     }
 }
@@ -271,11 +266,12 @@ void radioLinkFailSafe() {
     }
 }
 
-static uint32_t lowVoltageStartTime = 0; //outside the while true loop so it doesn't get reset
-static bool lowVoltageStarted = false;
-constexpr float LOW_VOLTAGE_THRESHOLD = 19.2f;
+constexpr float LOW_VOLTAGE_THRESHOLD = 19.2f; //outside the task stack so that cli can access it
 
 void lowLevelFailSafe() {
+    uint32_t lowVoltageStartTime = 0; //outside the while true loop so it doesn't get reset
+    bool lowVoltageStarted = false;
+
     yieldCurrentTask();
 
     while (true) {
@@ -340,8 +336,6 @@ void sensorCalibration() { //performs a mean over the gyro samples and subtracts
 #endif
 }
 
-
-volatile uint16_t batteryADCBuffer[2] = {0, 0}; //used for circular buffer
 void powerManagement() { //becomes its own task as it will be used in multiple places
     static uint32_t lastRunTime = 0;
 
@@ -352,11 +346,7 @@ void powerManagement() { //becomes its own task as it will be used in multiple p
     yieldCurrentTask();
 
     while (true) {
-        #ifdef SIMULATION
-            ADCPacket packet = injectMockBatteryADCBuffer();
-        #else
-            ADCPacket packet = injectBatteryADCBuffer();
-        #endif
+        ADCPacket packet = populateBatteryADCBuffer();
 
         const float voltage = packet.bytes[0] * (3.3f / 4095.0f) * VOLTAGE_DIVIDER_RATIO;
         const float currentVolts = packet.bytes[1] * (3.3f / 4095.0f);
@@ -411,7 +401,9 @@ void dShotGeneration() {
         for (int i = 0; i < 17; i++) {
             dshotBuffer1[i] = m1.bits[i];
             dshotBuffer2[i] = m2.bits[i];
-            dshotBuffer3[i] = m3.bits[i];
+
+            dshotBuffer3[i] = m3.bits[i]/2; //tim4 is twice as slow
+
             dshotBuffer4[i] = m4.bits[i];
         }
 
@@ -425,7 +417,7 @@ void dShotGeneration() {
     }
 }
 
-void flightStateMachine() {
+void flightStateMachine() { //add keybinds for actions
     yieldCurrentTask();
 
     while (true) {
@@ -454,12 +446,15 @@ void flightStateMachine() {
                 break;
             case FlightState::WARN:
                 printToUSART(drone.warnMSG); //printing to osd is automatic
+                //need to add blackboxlogging
                 break;
             case FlightState::FAILSAFE:
                 printToUSART(drone.failsafeMSG); //printing to osd is automatic
+                //need to add blackboxlogging
                 break;
             case FlightState::ERROR:
                 printToUSART(drone.errorMSG); //printing to osd is automatic
+                //need to add blackboxlogging
                 break;
         }
 
@@ -478,7 +473,7 @@ void flightStateMachine() {
 
 //master task for imu
 void imuControlLoop() { // one interrupt-zone task, triggered by real IMU DRDY eventually
-    // yieldCurrentTask();
+    yieldCurrentTask();
 
     while (true) {
         printToUSART("[IMU-CL] Start: \n");
@@ -486,12 +481,15 @@ void imuControlLoop() { // one interrupt-zone task, triggered by real IMU DRDY e
         stateEstimation();
         flightLoop();
         printToUSART("[IMU-CL] End \n");
+
+        decideNextInterruptTask(&taskControlBlocks[3]); //calls dshotgeneration
+
         yieldCurrentTask();
     }
 }
 
 //main scheduled tasks
-void iwdgTask() {
+void iwdgTask() { //add a stopping sequence to reboot the fc
     IWDG->KR  = 0x5555; //enable register by writing
     IWDG->PR  = IWDG_PR_PR_2; //32khz = 1ms clock tick (same as systick
     IWDG->RLR = 1000;
@@ -571,14 +569,14 @@ void updatePeripherals() {
     }
 }
 
-
-void gpsParser() { //add mock buffer stuff later
-    static char sentenceBuffer[96];
-    static uint8_t bufferIdx = 0;
+void gpsParser() { //needs injector
+    uint8_t bufferIdx = 0;
 
     yieldCurrentTask();
 
     while (true) {
+        
+        GPSPacket sentenceBuffer = populateGPSBuffer();
 
         while (currentBoardConfig.gps_uart->ISR & USART_ISR_RXNE) { //while recieving new bytes
 
@@ -586,20 +584,20 @@ void gpsParser() { //add mock buffer stuff later
 
             if (c == '$') { //reset sequence and start new transmit
                 bufferIdx = 0;
-                sentenceBuffer[bufferIdx++] = c;
+                sentenceBuffer.bytes[bufferIdx++] = c;
             }
 
             else if (c == '\r' || c == '\n') {
                 if (bufferIdx > 0) {
-                    sentenceBuffer[bufferIdx] = '\0';
-                    if (std::strncmp(sentenceBuffer, "$GNGGA", 6) == 0 || std::strncmp(sentenceBuffer, "$GPGGA", 6) == 0) { //ensure gnss or gps signal via string compare
+                    sentenceBuffer.bytes[bufferIdx] = '\0';
+                    if (std::strncmp(sentenceBuffer.bytes, "$GNGGA", 6) == 0 || std::strncmp(sentenceBuffer.bytes, "$GPGGA", 6) == 0) { //ensure gnss or gps signal via string compare
                         int32_t  localLat = 0; //reset locals
                         int32_t  localLon = 0;
                         uint8_t  localSats = 0;
                         uint16_t localAlt = 0;
                         uint8_t  fixQuality = 0;
 
-                        char* token = strtok(sentenceBuffer, ","); //split sentence by commas
+                        char* token = strtok(sentenceBuffer.bytes, ","); //split sentence by commas
                         uint8_t field = 0; //used to track position oin sentence
 
                         char latStr[16] = {0};
@@ -634,8 +632,8 @@ void gpsParser() { //add mock buffer stuff later
                             drone.altitude   = localAlt;
                             __enable_irq();
                         }
-                    } else if (std::strncmp(sentenceBuffer, "$GNRMC", 6) == 0 || std::strncmp(sentenceBuffer, "$GPRMC", 6) == 0) {
-                        char* token = strtok(sentenceBuffer, ","); //split sentence by commas
+                    } else if (std::strncmp(sentenceBuffer.bytes, "$GNRMC", 6) == 0 || std::strncmp(sentenceBuffer.bytes, "$GPRMC", 6) == 0) {
+                        char* token = strtok(sentenceBuffer.bytes, ","); //split sentence by commas
                         uint8_t field = 0;
                         bool statusValid = false;
 
@@ -669,8 +667,8 @@ void gpsParser() { //add mock buffer stuff later
                 }
             }
 
-            else if (bufferIdx < sizeof(sentenceBuffer) - 1) {
-                sentenceBuffer[bufferIdx++] = c;
+            else if (bufferIdx < sizeof(sentenceBuffer.bytes) - 1) {
+                sentenceBuffer.bytes[bufferIdx++] = c;
             }
 
         }
@@ -997,7 +995,7 @@ uint8_t gpsSatPos[2] = {22, 22};
 
 uint8_t drnMsgPos[2] = {23, 22};
 
-void osdUpdate() {
+void osdUpdate() { //needs double pipeline + dma for applicable circumstance (e.g. config)
 
     char osdBuffer[32];
     yieldCurrentTask(); //yield after init setup
@@ -1106,15 +1104,12 @@ void osdUpdate() {
     }
 }
 
-[[noreturn]] void logToBlackBox(); //MUST INCLUDE FOR LOGGING ERRORS AND EVERYTHING
-
-uint8_t baroBuffer[6]; //24 slots for each temp and pressure
 volatile float p0 = 101325.0f; //adjust in cli
 
 void readBarometerRegisters() {
 
 #ifdef SIMULATION
-   BaroTrim trim = initMockBarometer(); //call the init function
+    BaroTrim trim = initMockBarometer();
 #else
     BaroTrim trim = initBarometer();
 #endif
@@ -1142,9 +1137,11 @@ void readBarometerRegisters() {
 
     while (true) {
 
+        BaroRawPacket baroRawBuffer = populateBarometerBuffer();
+
         //uses dma to do everything
-        const uint32_t rawPressure = (baroBuffer[0] << 16) | (baroBuffer[1] << 8) | (baroBuffer[2]); //compile the 8 bit buffer into 24 bit
-        const uint32_t rawTemperature = (baroBuffer[3] << 16) | (baroBuffer[4] << 8) | (baroBuffer[5]);
+        const uint32_t rawPressure = (baroRawBuffer.bytes[0] << 16) | (baroRawBuffer.bytes[1] << 8) | (baroRawBuffer.bytes[2]); //compile the 8 bit buffer into 24 bit
+        const uint32_t rawTemperature = (baroRawBuffer.bytes[3] << 16) | (baroRawBuffer.bytes[4] << 8) | (baroRawBuffer.bytes[5]);
 
         //calculations
         //compensate temperature:
@@ -1208,6 +1205,133 @@ void checkStackHealth() {
         }
 
         printToUSART("\n");
+        yieldCurrentTask();
+    }
+}
+
+void logToBlackBox() { //MUST INCLUDE FOR LOGGING ERRORS AND EVERYTHING
+    //design it so that its an interrupt at one of the lowest possible levels (even lower than some of the interrupt tasks)
+    //have the code call the interrupt from individual methods, similar to printtousart/printtocli
+    //have a scheduled version which runs at a high speed, but is only enabled with the debug flag enabled
+    yieldCurrentTask();
+    while (true) {
+
+
+
+        yieldCurrentTask();
+    }
+}
+
+//3 buffers
+uint8_t batteryTX[8];
+uint8_t flightModeTX[1];
+uint8_t gpsTX[15];
+
+
+void telemetryTX() {
+    yieldCurrentTask();
+
+    while (true) {
+        //handle battery transmitting
+        const auto voltage = static_cast<uint16_t>(drone.batteryVoltage * 10.0f);
+        const auto current = static_cast<uint16_t>(drone.batteryCurrent * 10.0f);
+        const auto capacityUsed = static_cast<uint32_t>(drone.batteryCapacityUsed * 10.0f);
+        const auto perecentage = static_cast<uint8_t>(drone.batteryPerecent);
+
+        batteryTX[0] = (voltage >> 8) & 0xFF;
+        batteryTX[1] = (voltage & 0xFF);
+
+        batteryTX[2] = (current >> 8) & 0xFF;
+        batteryTX[3] = (current & 0xFF);
+
+        batteryTX[4] = (capacityUsed >> 16) & 0xFF;
+        batteryTX[5] = (capacityUsed >> 8) & 0xFF;
+        batteryTX[6] = (capacityUsed & 0xFF);
+
+        batteryTX[7] = (perecentage) & 0xFF;
+
+        //handle flight mode handling
+        flightModeTX[0] = static_cast<uint8_t>(drone.currentSystemState) & 0xFF; //its already uint8_t
+
+        //handle gps values
+        const auto latitude = static_cast<int32_t>(drone.latitude * std::pow(10, 7));
+        const auto longitude = static_cast<int32_t>(drone.longitude * std::pow(10, 7));
+        const auto speed = static_cast<uint16_t>(drone.groundSpeed * 10);
+        const auto heading = static_cast<uint16_t>(drone.heading * 100);
+        const auto altitude = static_cast<uint16_t>(drone.altitude * 100);
+        const auto satellites = static_cast<uint8_t>(drone.satellites);
+
+        gpsTX[0] = (latitude >> 24) & 0xFF;
+        gpsTX[1] = (latitude >> 16) & 0xFF;
+        gpsTX[2] = (latitude >> 8) & 0xFF;
+        gpsTX[3] = (latitude & 0xFF);
+
+        gpsTX[4] = (longitude >> 24) & 0xFF;
+        gpsTX[5] = (longitude >> 16) & 0xFF;
+        gpsTX[6] = (longitude >> 8) & 0xFF;
+        gpsTX[7] = (longitude & 0xFF);
+
+        gpsTX[8] = (speed >> 8) & 0xFF;
+        gpsTX[9] = (speed & 0xFF);
+
+        gpsTX[10] = (heading >> 8) & 0xFF;
+        gpsTX[11] = (heading & 0xFF);
+
+        gpsTX[12] = (altitude >> 8) & 0xFF;
+        gpsTX[13] = (altitude & 0xFF);
+
+        gpsTX[14] = (satellites) & 0xFF;
+
+        //format the buffers with the checksums
+        uint8_t formattedBatteryTX[12];
+        uint8_t formattedFlightModeTX[5];
+        uint8_t formattedGPSTX[19];
+
+        const uint8_t formattedBatteryTXSize = formatCRSFFrame(0x08, batteryTX, 8, formattedBatteryTX);
+        const uint8_t formattedFlightModeTXSize = formatCRSFFrame(0x21, flightModeTX, 1, formattedFlightModeTX);
+        const uint8_t formattedGPSSize = formatCRSFFrame(0x02, gpsTX, 15, formattedGPSTX);
+
+#ifdef DEBUG
+        printToUSART("Telemetry TX: \n");
+        printToUSART(" [TXT-BAT] Battery: \n");
+        printToUSART("  Voltage: "); printToUSART(drone.batteryVoltage); printToUSART("\n");
+        printToUSART("  Current: "); printToUSART(drone.batteryCurrent); printToUSART("\n");
+        printToUSART("  Capacity: "); printToUSART(drone.batteryCapacityUsed); printToUSART("\n");
+        printToUSART("  Percent: "); printToUSART(drone.batteryPerecent); printToUSART("\n\n");
+
+        printToUSART(" [TXT-FLM] Flight Status: \n");
+        printToUSART("  Flight Mode: "); printToUSART(to_string(drone.currentSystemState).c_str()); printToUSART("\n");
+        printToUSART("  Warn msg: "); printToUSART(drone.warnMSG); printToUSART("\n");
+        printToUSART("  Error msg: "); printToUSART(drone.errorMSG); printToUSART("\n");
+        printToUSART("  Failsafe msg: "); printToUSART(drone.failsafeMSG); printToUSART("\n\n");
+
+        printToUSART(" [TXT-GPS] Location: \n");
+        printToUSART("  Latitude: "); printToUSART(drone.latitude); printToUSART("\n");
+        printToUSART("  Longitude: "); printToUSART(drone.longitude); printToUSART("\n");
+        printToUSART("  Altitude: "); printToUSART(drone.altitude); printToUSART("\n\n");
+
+        printToUSART(" [TXT-GPS] Directionality: \n");
+        printToUSART("  Ground Speed (kph): "); printToUSART(drone.groundSpeed); printToUSART("\n");
+        printToUSART("  Heading: "); printToUSART(drone.heading); printToUSART("\n");
+        printToUSART("  Satellites: "); printToUSART(drone.satellites); printToUSART("\n\n\n");
+#endif
+
+        for (int i = 0; i < formattedBatteryTXSize; i++) {
+             while (!(currentBoardConfig.crsf_uart->ISR & USART_ISR_TXE)) {}
+             currentBoardConfig.crsf_uart->TDR = formattedBatteryTX[i];
+        }
+
+        for (int i = 0; i < formattedFlightModeTXSize; i++) {
+             while (!(currentBoardConfig.crsf_uart->ISR & USART_ISR_TXE)) {}
+             currentBoardConfig.crsf_uart->TDR = formattedFlightModeTX[i];
+        }
+
+        for (int i = 0; i < formattedGPSSize; i++) {
+             while (!(currentBoardConfig.crsf_uart->ISR & USART_ISR_TXE)) {}
+             currentBoardConfig.crsf_uart->TDR = formattedGPSTX[i];
+        }
+
+        //yield
         yieldCurrentTask();
     }
 }

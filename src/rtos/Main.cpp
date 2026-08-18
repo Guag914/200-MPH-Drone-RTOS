@@ -4,43 +4,100 @@
 
 #include <atomic>
 
-#include "Logger.h"
+#include "logging/Logger.h"
 #include "rtos.h"
 #include "stm32f7xx.h"
 #include "../../User_Tasks/user_tasks.h"
 #include "../flight/flight_control.h"
 #include "../flight/BufferPopulation.h"
-#include <new>
+#include "../sim/SimInjector.h"
 #include <cstdlib>
-
 
 volatile uint32_t globalSystemTicks = 0;
 volatile bool rtosStarted = false;
 
-
 TaskControlBlock taskControlBlocks[MAX_TASKS];
 int activeTasks = 0;
-static int currTaskIndex = 0;
+
+int currTaskIndex = 0;
+int nextTaskIndex = 0;
+
 int currLoopIndex;
 
 static int preemptStack[MAX_TASKS];
 int preemptDepth = 0;
 
+static uint32_t pendingInterruptMask = 0;
+
 //sim helpers
 #ifdef SIMULATION
 
-    static uint32_t seed = 98765;
-    static uint32_t getRandom(int range) { // Used to find a random number
-        seed = (1103515245 * seed + 12345) % 2147483648;
-        return (seed % range) + 1;
-    }
+static void injectMockBuffers() {
+    injectMockIMUDMA();
+    injectMockCRSFDMA();
+    injectMockADCDMA();
+    injectMockBaroDMA();
+    injectMockGPSDMA();
+}
 
 static void executeRandomInterrupts() {
-        if (getRandom(100) == 50) { decideNextInterruptTask(&taskControlBlocks[1]); }
-        if (getRandom(100) == 50) { decideNextInterruptTask(&taskControlBlocks[2]); }
+    if (globalSystemTicks % 1 == 0) { //every 1 ms - task 1
+        #ifdef DEBUG
+        printToUSART("[SIM-ERI] Attempting to call IMU from IRQ\n\n");
+        #endif
+
+        mock_LISR |= DMA_LISR_TCIF0; //artificially clear nvic through software buffers because actual registers are read only
+        NVIC_SetPendingIRQ(DMA1_Stream0_IRQn); //artificially call nvic
     }
 
+    if (globalSystemTicks % 1 == 0) { //every 1 ms - task 2
+        #ifdef DEBUG
+        printToUSART("[SIM-ERI] Attempting to call CRSF from IRQ\n\n");
+        #endif
+
+        mock_HISR |= DMA_HISR_TCIF5;
+        NVIC_SetPendingIRQ(DMA1_Stream5_IRQn);
+    }
+}
 #endif
+
+extern "C" void DMA1_Stream0_IRQHandler(void) {
+#ifdef SIMULATION
+    uint32_t flags = mock_LISR;
+    mock_LISR = 0;
+#else
+    uint32_t flags = DMA1->LISR;
+#endif
+
+    if (flags & DMA_LISR_HTIF0) { //half transfer
+        DMA1->LIFCR = DMA_LIFCR_CHTIF0; //clear flag
+        decideNextInterruptTask(&taskControlBlocks[1]); //call method
+    }
+
+    if (flags & DMA_LISR_TCIF0) { //full transfer
+        DMA1->LIFCR = DMA_LIFCR_CTCIF0; //clear flag
+        decideNextInterruptTask(&taskControlBlocks[1]); //call method
+    }
+}
+
+extern "C" void DMA1_Stream5_IRQHandler(void) {
+#ifdef SIMULATION
+    uint32_t flags = mock_HISR;
+    mock_HISR = 0;
+#else
+    uint32_t flags = DMA1->HISR; //streams 0-3 use LISR while streams 4-7 use HISR
+#endif
+
+    if (flags & DMA_HISR_HTIF5) {
+        DMA1->HIFCR = DMA_HIFCR_CHTIF5;
+        decideNextInterruptTask(&taskControlBlocks[2]);
+    }
+
+    if (flags & DMA_HISR_TCIF5) {
+        DMA1->HIFCR = DMA_HIFCR_CTCIF5;
+        decideNextInterruptTask(&taskControlBlocks[2]);
+    }
+}
 
 //actual rtos logic
 static bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const char* textName, uint32_t stackSizeWords = 256) { //set the default to scheduled
@@ -61,7 +118,6 @@ static bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, co
     //setup stack
     taskControlBlocks[activeTasks].taskStack = newStack;
     taskControlBlocks[activeTasks].stackSizeWords = stackSizeWords;
-
 
     //normal init
     taskControlBlocks[activeTasks].taskCodeAddress = functionAddress;
@@ -84,7 +140,7 @@ static bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, co
         for (int i = 0; i < 32; i++) { taskControlBlocks[activeTasks].topOfStack[i] = 0; }
 
     //set the PC slot (14) to the function address and xPSR slot (15) to Thumb mode
-    taskControlBlocks[activeTasks].topOfStack[29] = 0xFFFFFFFD; //manally set LR (slot 45) to a dedicated address rather than undef/auto assigned
+    taskControlBlocks[activeTasks].excReturn = 0xFFFFFFFD;//manally set LR (slot 45) to a dedicated address rather than undef/auto assigned
     taskControlBlocks[activeTasks].topOfStack[30] = reinterpret_cast<uint32_t>(functionAddress);
     taskControlBlocks[activeTasks].topOfStack[31] = 0x01000000;
 
@@ -113,7 +169,6 @@ static bool initializeNewTask(void (*functionAddress)(), const char* textName, u
     taskControlBlocks[activeTasks].taskStack = newStack;
     taskControlBlocks[activeTasks].stackSizeWords = stackSizeWords;
 
-
     taskControlBlocks[activeTasks].taskCodeAddress = functionAddress;
     taskControlBlocks[activeTasks].taskName = textName;
     taskControlBlocks[activeTasks].taskState = TaskState::BLOCKED;
@@ -129,7 +184,7 @@ static bool initializeNewTask(void (*functionAddress)(), const char* textName, u
 
         for (int i = 0; i < 32; i++) { taskControlBlocks[activeTasks].topOfStack[i] = 0; } //reset all to 0
 
-    taskControlBlocks[activeTasks].topOfStack[29] = 0xFFFFFFFD;
+    taskControlBlocks[activeTasks].excReturn = 0xFFFFFFFD;
     taskControlBlocks[activeTasks].topOfStack[30] = reinterpret_cast<uint32_t>(functionAddress);
     taskControlBlocks[activeTasks].topOfStack[31] = 0x01000000;
 
@@ -158,6 +213,12 @@ bool protectStackGuard(const uint32_t guardBaseAddr) {
 
 uint32_t** currTaskAddress = nullptr;
 uint32_t** nextTaskAddress = nullptr;
+uint32_t* currExcReturnAddress = nullptr;
+uint32_t* nextExcReturnAddress = nullptr;
+
+//universal helpers to stop pendSV getting overwritten
+bool switchPending = false;
+static int pendingWinnerIndex = -1;
 
 void yieldCurrentTask() {
     if (!rtosStarted) {
@@ -168,11 +229,37 @@ void yieldCurrentTask() {
 
     taskControlBlocks[currTaskIndex].taskState = TaskState::BLOCKED; //block the current interrupt and go back to the scheduler process
 
-    //dynamically switch to the last task
-    int nextTaskIdx = (preemptDepth > 0) ? preemptStack[--preemptDepth] : 0; //pops off the top item in the stack
+    //static does NOT mean universal var in c++
+    //check for any deferred interrupt request, highest priority wins
+    int pendingIdx = -1, pendingPrio = -1;
+    for (int i = 0; i < activeTasks; i++) {
+        if (pendingInterruptMask & (1u << i)) {
+            if (static_cast<int>(taskControlBlocks[i].priority) > pendingPrio) {
+                pendingPrio = taskControlBlocks[i].priority;
+                pendingIdx = i;
+            }
+        }
+    }
+
+    int nextTaskIdx;
+    if (pendingIdx != -1) {
+        pendingInterruptMask &= ~(1u << pendingIdx);
+        nextTaskIdx = pendingIdx;
+        switchPending = true;
+        pendingWinnerIndex = pendingIdx;
+    } else {
+        //dynamically switch to the last task
+        nextTaskIdx = (preemptDepth > 0) ? preemptStack[--preemptDepth] : 0;
+        if (preemptDepth == 0 && nextTaskIdx == 0) {
+            switchPending = false;
+            pendingWinnerIndex = -1;
+        }
+    }
 
     currTaskAddress = &(taskControlBlocks[currTaskIndex].topOfStack);
     nextTaskAddress = &(taskControlBlocks[nextTaskIdx].topOfStack);
+    currExcReturnAddress = &(taskControlBlocks[currTaskIndex].excReturn);
+    nextExcReturnAddress = &(taskControlBlocks[nextTaskIdx].excReturn);
 
     currTaskIndex = nextTaskIdx;
     taskControlBlocks[currTaskIndex].taskState = TaskState::RUNNING;
@@ -184,11 +271,6 @@ void yieldCurrentTask() {
     __ISB();
 }
 
-
-//universal helpers to stop pendSV getting overwritten
-bool switchPending = false;
-static int pendingWinnerIndex = -1;
-
 void decideNextInterruptTask(TaskControlBlock* interruptTask) {
     __disable_irq(); //guards against pointers being overrwritten by simultaneous interrupts
 
@@ -197,6 +279,12 @@ void decideNextInterruptTask(TaskControlBlock* interruptTask) {
     if (taskControlBlocks[comparisonIndex].taskType == TaskType::INTERRUPT &&
     taskControlBlocks[comparisonIndex].taskState == TaskState::RUNNING) {
         if (interruptTask->priority <= taskControlBlocks[comparisonIndex].priority) {
+            for (int i = 0; i < activeTasks; i++) {
+                if (&taskControlBlocks[i] == interruptTask) {
+                    pendingInterruptMask |= (1u << i); //remember the lower priority task instead of dropping it
+                    break;
+                }
+            }
             __enable_irq();
             return;
         }
@@ -224,6 +312,7 @@ void decideNextInterruptTask(TaskControlBlock* interruptTask) {
 
     //update addresses to point to next and current tasks
     nextTaskAddress = &(interruptTask->topOfStack);
+    nextExcReturnAddress = &(interruptTask->excReturn);
 
     //update current task index to the interrupt task
     for (int i = 0; i < activeTasks; i++) {
@@ -275,6 +364,9 @@ void decideNextScheduledTask() {
         currTaskAddress = &(taskControlBlocks[currTaskIndex].topOfStack);
         nextTaskAddress = &(taskControlBlocks[nextTaskIdx].topOfStack);
 
+        currExcReturnAddress = &(taskControlBlocks[currTaskIndex].excReturn);
+        nextExcReturnAddress = &(taskControlBlocks[nextTaskIdx].excReturn);
+
         // taskControlBlocks[currTaskIndex].taskState = TaskState::READY; //set it to running so it restores where it left off
         currTaskIndex = nextTaskIdx;
         taskControlBlocks[currTaskIndex].taskState = TaskState::RUNNING;
@@ -291,7 +383,11 @@ void decideNextScheduledTask() {
 
 extern "C" void SysTick_Handler() {
     globalSystemTicks++;
-    switchPending = false;
+
+    if (preemptDepth == 0) {
+        switchPending = false;
+        pendingWinnerIndex = -1;
+    }
 
     printToUSART("============------------ NEW TICK: ");
     printToUSART(globalSystemTicks);
@@ -315,8 +411,11 @@ extern "C" void SysTick_Handler() {
         callUserInterruptTasks();
     #endif
 
-    #ifdef SIMULATION
+    #if SIMULATION && !(USER_TASKS)
+        //populate mock buffers
+        injectMockBuffers();
         executeRandomInterrupts();
+        //actual dma interrupts are handled automatically via irq
     #endif
 }
 
@@ -343,11 +442,10 @@ extern "C" void MemManage_Handler(void) {
     printToUSART(" | PC: ");
     printHex32(stackedPC);
     printToUSART("\n");
-#ifdef SIMULATON
+#ifdef SIMULATION
     while (1) {
         __NOP();
     }
-}
 #else
     NVIC_SystemReset();
 #endif
@@ -363,6 +461,19 @@ extern "C" void MemManage_Handler(void) {
     }
 }
 
+static void initSystemGPIOClocks() {
+    //enable AHB1 peripheral clock gates for all active GPIO ports
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN  //IMU CS, UARTs
+                 |  RCC_AHB1ENR_GPIOBEN  //status LED, SPI2, SPI3
+                 |  RCC_AHB1ENR_GPIOCEN  //buzzer, ADC1, SDMMC Data
+                 |  RCC_AHB1ENR_GPIODEN  //baro CS (PD3), SDMMC CMD (PD2)
+                 |  RCC_AHB1ENR_GPIOEEN; //TIM1 Motor DShot outputs
+
+    //force a short delay until clock stabilization completes
+    const __IO uint32_t reg = RCC->AHB1ENR;
+    (void) reg;
+}
+
 extern "C" void start_drone_rtos() {
     SCB->CPACR |= (0xF << 20);
     __DSB(); __ISB();
@@ -373,17 +484,27 @@ extern "C" void start_drone_rtos() {
     MPU->CTRL = MPU_CTRL_PRIVDEFENA_Msk | MPU_CTRL_ENABLE_Msk;
     SCB->SHCSR |= SCB_SHCSR_MEMFAULTENA_Msk; //enable fault with its own handler
 
+    //enable gpio clocks
+    initSystemGPIOClocks();
+
     //calibration
     printToUSART("Calibrating sensors. Keep drone still...\n");
     sensorCalibration();
 
+    //start nvic regardless because testing also uses it
+    NVIC_SetPriority(DMA1_Stream0_IRQn, 1);
+    NVIC_EnableIRQ(DMA1_Stream0_IRQn); //enabled irq interrupt which calls parsing
+
+    startCRSF_DMARead();
+    NVIC_SetPriority(DMA1_Stream5_IRQn, 2);
+    NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+
 #if !(SIMULATION)
     //start dma
-    startCRSF_DMARead();
+    startIMU_DMARead(); //converted to circular buffer
     startBatteryADC_DMA();
     startBaro_DMATransfer();
-
-    //cannot call imu from here because its not a circular buffer
+    startGPS_DMARead();
 #endif
 
     //resets
@@ -404,74 +525,91 @@ extern "C" void start_drone_rtos() {
     /*===--- START TASK ENTRY ---===*/
 
     //interrupt tasks
+        //needs external python simulation (in)
         initializeNewTask(imuControlLoop,"IMUControlLoop", DEFAULT_STACK);
+        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
+        taskControlBlocks[activeTasks - 1].priority = 15;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
+
+        //needs external python simulation (in)
+        initializeNewTask(crsfParsing, "CRSFParsing", DEFAULT_STACK);
+        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
         taskControlBlocks[activeTasks - 1].priority = 14;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
 
-        initializeNewTask(crsfParsing, "CRSFParsing", DEFAULT_STACK);
+        // needs external python simulation (out)
+        initializeNewTask(dShotGeneration, "dShotGeneration", DEFAULT_STACK); //task 3
+        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
         taskControlBlocks[activeTasks - 1].priority = 13;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
 
-        initializeNewTask(dShotGeneration, "dShotGeneration", DEFAULT_STACK);
+        //needs external python simulation (in) - add keybinds for certain actions
+        initializeNewTask(flightStateMachine, "flightStateMachine", DEFAULT_STACK); //task 4
         taskControlBlocks[activeTasks - 1].priority = 12;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
 
-        initializeNewTask(flightStateMachine, "flightStateMachine", DEFAULT_STACK);
-        taskControlBlocks[activeTasks - 1].priority = 11;
-        taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
-
     //scheduled tasks
+        //needs external python simulation  (out)
         initializeNewTask(osdUpdate, 16, "osdUpdate", DEFAULT_STACK); //about 60 hz
         protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
-        taskControlBlocks[activeTasks - 1].priority = 10;
+        taskControlBlocks[activeTasks - 1].priority = 11;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
         initializeNewTask(radioLinkFailSafe, 20, "radioLinkFailSafe", DEFAULT_STACK);
-        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
-        taskControlBlocks[activeTasks - 1].priority = 9;
+        taskControlBlocks[activeTasks - 1].priority = 10;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
         initializeNewTask(lowLevelFailSafe, 50, "lowLevelFailSafe", DEFAULT_STACK);
         protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
+        taskControlBlocks[activeTasks - 1].priority = 9;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
+
+        //needs external python simulation (in)
+        initializeNewTask(powerManagement, 20, "powerManagement", DEFAULT_STACK);
+        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
         taskControlBlocks[activeTasks - 1].priority = 8;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
-        initializeNewTask(powerManagement, 20, "powerManagement", DEFAULT_STACK);
-        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
+        initializeNewTask(telemetryTX, 20, "telemetryTX", DEFAULT_STACK);
         taskControlBlocks[activeTasks - 1].priority = 7;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
+        //needs external python simulation (in)
         initializeNewTask(gpsParser, 100, "gpsParser", DEFAULT_STACK);
         protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
         taskControlBlocks[activeTasks - 1].priority = 6;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
+        //needs external python simulation (in)
         initializeNewTask(readBarometerRegisters, 20, "readBarometerRegistersadBarometerRegisters", DEFAULT_STACK);
-        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
         taskControlBlocks[activeTasks - 1].priority = 5;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
+        //needs external python simulation (out)
         initializeNewTask(updatePeripherals, 100, "updatePeripherals", DEFAULT_STACK);
         taskControlBlocks[activeTasks - 1].priority = 4;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
+        //needs external python simulation (in, out) - already done (in)
         initializeNewTask(usbCLI, 20, "usbCLI", DEFAULT_STACK);
         taskControlBlocks[activeTasks - 1].priority = 3;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
-        initializeNewTask(iwdgTask, 100, "iwdgTask", DEFAULT_STACK);
+        initializeNewTask(iwdgTask, 2000, "iwdgTask", DEFAULT_STACK);
         taskControlBlocks[activeTasks - 1].priority = 2;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
+#ifdef DEBUG
         initializeNewTask(checkStackHealth, 200, "checkStackHealth", DEFAULT_STACK);
         taskControlBlocks[activeTasks - 1].priority = 1;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
+#endif
 
     /*===--- END TASK ENTRY ---===*/
     #endif
 
     //set pendsv to lowest priority interrupt
-    NVIC_SetPriority(PendSV_IRQn, 0xFF);
+    NVIC_SetPriority(PendSV_IRQn, 0xFF); //calls systick which executes task loop
 
     SysTick->LOAD = 215999UL;
     SysTick->VAL  = 0UL;
@@ -493,12 +631,12 @@ extern "C" void start_drone_rtos() {
 }
 
 //EXISTING TASKS (JULY 31ST):
-//Debug interrupt race condition as well as new stack overflow in the interrupts
+//Debug interrupt race condition
+//Debug new stack overflow in the interrupts
 //Add premium betaflight features like expo, gui, and proper cli
 
 //BOOTLOADING (AUGUST 5TH):
 //Figure out the proper way which code will be loaded (e.g. invisible pins, or via main microcontroler to others)
-//Ensure the bootloader works on a physics stm32 board (nucelo board)
 
 //TASK WORK (JULY 26TH):
 //1. OSD
@@ -510,10 +648,10 @@ extern "C" void start_drone_rtos() {
 //DRIVERS WORK (JULY 27TH):
 //1. Reciever module config driver (bootloading process)
 //2. ESC driver work - DO NOT WRITE BY HAND - Flash other firmware e.g. BL heli
-//ALL CODE SHOULD BE DONE, TESTED, AND FLASHED BY AUGUST 10TH
-//ALL HARDWARE PCB'S SHOULD BE DONE AND PRINTED BY AUGUST 10TH TO GIVE TIME FOR REVISIONS
+//ALL CODE SHOULD BE DONE, TESTED, AND FLASHED BY AUGUST 20TH
+//ALL HARDWARE PCB'S SHOULD BE DONE AND PRINTED BY AUGUST 20TH TO GIVE TIME FOR REVISIONS
 //ALL CAD SHOULD BE DONE BY AUGUST 10TH TO GIVE TIME FOR PRINTING
 
 //CAD:
-//1. Research aerodynamics and come up with initial frame by August 5th
-//2. Simulate the frame + make changes (august 15th)
+//1. Research aerodynamics and come up with initial frame by August 20th
+//2. Simulate the frame + make changes (august 30th)

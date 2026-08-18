@@ -7,7 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include "flight_control.h"
+#include "./flight_control.h"
+#include "../rtos/rtos.h"
 
 #define GYRO_CUTOFF_HZ 90.0f //11.11 ms
 #define LOOP_DT 0.001f //1 ms
@@ -292,7 +293,7 @@ uint32_t getUnusedStackWords(const uint8_t taskIdx) {
     const uint32_t* stack = taskControlBlocks[taskIdx].taskStack;
     uint32_t unusedWords = 0;
 
-    for (int i = 8; i < taskControlBlocks[taskIdx].stackSizeWords; i++) {
+    for (uint32_t i = 8; i < taskControlBlocks[taskIdx].stackSizeWords; i++) {
         if (stack[i] == 0xA5A5A5A5) {
             unusedWords++;
         } else {
@@ -302,3 +303,5 @@ uint32_t getUnusedStackWords(const uint8_t taskIdx) {
 
     return unusedWords;
 }
+
+//blackboxhelpers

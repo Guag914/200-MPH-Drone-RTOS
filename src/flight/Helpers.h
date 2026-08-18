@@ -12,6 +12,8 @@
 #include <sys/types.h>
 #include "./flight_control.h"
 
+#define BLACKBOX_RING_SIZE 4096;
+
 struct DShotFrame { uint32_t bits[17]; };
 
 extern void estimateAngles();

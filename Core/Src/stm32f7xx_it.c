@@ -60,9 +60,10 @@ extern DMA_HandleTypeDef hdma_spi2_rx;
 extern DMA_HandleTypeDef hdma_spi3_rx;
 extern DMA_HandleTypeDef hdma_tim1_ch1;
 extern DMA_HandleTypeDef hdma_tim1_ch2;
-extern DMA_HandleTypeDef hdma_tim1_ch3;
 extern DMA_HandleTypeDef hdma_tim1_ch4_trig_com;
+extern DMA_HandleTypeDef hdma_tim4_ch3;
 extern DMA_HandleTypeDef hdma_usart2_rx;
+extern DMA_HandleTypeDef hdma_usart3_rx;
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 /* USER CODE BEGIN EV */
@@ -108,7 +109,7 @@ void HardFault_Handler(void)
 // void MemManage_Handler(void)
 // {
 //   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-// // //
+// // // // // //
 //   /* USER CODE END MemoryManagement_IRQn 0 */
 //   while (1)
 //   {
@@ -179,10 +180,10 @@ void DebugMon_Handler(void)
 // void PendSV_Handler(void)
 // {
 //   /* USER CODE BEGIN PendSV_IRQn 0 */
-// // // // //
+// // // // // // // //
 //   /* USER CODE END PendSV_IRQn 0 */
 //   /* USER CODE BEGIN PendSV_IRQn 1 */
-// // // // //
+// // // // // // // //
 //   /* USER CODE END PendSV_IRQn 1 */
 // }
 
@@ -192,11 +193,11 @@ void DebugMon_Handler(void)
 // void SysTick_Handler(void)
 // {
 //   /* USER CODE BEGIN SysTick_IRQn 0 */
-// // // // // //
+// // // // // // // // //
 //   /* USER CODE END SysTick_IRQn 0 */
 //   HAL_IncTick();
 //   /* USER CODE BEGIN SysTick_IRQn 1 */
-// // // // // //
+// // // // // // // // //
 //   /* USER CODE END SysTick_IRQn 1 */
 // }
 
@@ -210,15 +211,29 @@ void DebugMon_Handler(void)
 /**
   * @brief This function handles DMA1 stream0 global interrupt.
   */
-void DMA1_Stream0_IRQHandler(void)
+// void DMA1_Stream0_IRQHandler(void)
+// {
+//   /* USER CODE BEGIN DMA1_Stream0_IRQn 0 */
+// //
+//   /* USER CODE END DMA1_Stream0_IRQn 0 */
+//   HAL_DMA_IRQHandler(&hdma_spi3_rx);
+//   /* USER CODE BEGIN DMA1_Stream0_IRQn 1 */
+// //
+//   /* USER CODE END DMA1_Stream0_IRQn 1 */
+// }
+
+/**
+  * @brief This function handles DMA1 stream1 global interrupt.
+  */
+void DMA1_Stream1_IRQHandler(void)
 {
-  /* USER CODE BEGIN DMA1_Stream0_IRQn 0 */
+  /* USER CODE BEGIN DMA1_Stream1_IRQn 0 */
 
-  /* USER CODE END DMA1_Stream0_IRQn 0 */
-  HAL_DMA_IRQHandler(&hdma_spi3_rx);
-  /* USER CODE BEGIN DMA1_Stream0_IRQn 1 */
+  /* USER CODE END DMA1_Stream1_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart3_rx);
+  /* USER CODE BEGIN DMA1_Stream1_IRQn 1 */
 
-  /* USER CODE END DMA1_Stream0_IRQn 1 */
+  /* USER CODE END DMA1_Stream1_IRQn 1 */
 }
 
 /**
@@ -238,16 +253,16 @@ void DMA1_Stream3_IRQHandler(void)
 /**
   * @brief This function handles DMA1 stream5 global interrupt.
   */
-void DMA1_Stream5_IRQHandler(void)
-{
-  /* USER CODE BEGIN DMA1_Stream5_IRQn 0 */
-
-  /* USER CODE END DMA1_Stream5_IRQn 0 */
-  HAL_DMA_IRQHandler(&hdma_usart2_rx);
-  /* USER CODE BEGIN DMA1_Stream5_IRQn 1 */
-
-  /* USER CODE END DMA1_Stream5_IRQn 1 */
-}
+// void DMA1_Stream5_IRQHandler(void)
+// {
+//   /* USER CODE BEGIN DMA1_Stream5_IRQn 0 */
+// //
+//   /* USER CODE END DMA1_Stream5_IRQn 0 */
+//   HAL_DMA_IRQHandler(&hdma_usart2_rx);
+//   /* USER CODE BEGIN DMA1_Stream5_IRQn 1 */
+// //
+//   /* USER CODE END DMA1_Stream5_IRQn 1 */
+// }
 
 /**
   * @brief This function handles USART1 global interrupt.
@@ -275,6 +290,20 @@ void USART2_IRQHandler(void)
   /* USER CODE BEGIN USART2_IRQn 1 */
 
   /* USER CODE END USART2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA1 stream7 global interrupt.
+  */
+void DMA1_Stream7_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Stream7_IRQn 0 */
+
+  /* USER CODE END DMA1_Stream7_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_tim4_ch3);
+  /* USER CODE BEGIN DMA1_Stream7_IRQn 1 */
+
+  /* USER CODE END DMA1_Stream7_IRQn 1 */
 }
 
 /**
@@ -331,20 +360,6 @@ void DMA2_Stream4_IRQHandler(void)
   /* USER CODE BEGIN DMA2_Stream4_IRQn 1 */
 
   /* USER CODE END DMA2_Stream4_IRQn 1 */
-}
-
-/**
-  * @brief This function handles DMA2 stream6 global interrupt.
-  */
-void DMA2_Stream6_IRQHandler(void)
-{
-  /* USER CODE BEGIN DMA2_Stream6_IRQn 0 */
-
-  /* USER CODE END DMA2_Stream6_IRQn 0 */
-  HAL_DMA_IRQHandler(&hdma_tim1_ch3);
-  /* USER CODE BEGIN DMA2_Stream6_IRQn 1 */
-
-  /* USER CODE END DMA2_Stream6_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */

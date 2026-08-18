@@ -52,8 +52,8 @@ add_executable(${CMAKE_PROJECT_NAME}
         User_Tasks/user_tasks.h
         src/flight/Helpers.cpp
         src/flight/Helpers.h
-        src/rtos/Logger.cpp
-        src/rtos/Logger.h
+        src/rtos/logging/Logger.cpp
+        src/rtos/logging/Logger.h
         src/sim/SimInjector.cpp
         src/sim/SimInjector.h
 )

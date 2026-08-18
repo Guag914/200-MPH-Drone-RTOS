@@ -1,8 +1,11 @@
 #include "user_tasks.h"
 #include "../src/rtos/rtos.h"
-#include "../src/rtos/Logger.h"
+#include "../src/rtos/logging/Logger.h"
 
 /*====== BEGIN USER TASK ENTRY ======*/
+
+// The example code uses a uint32 variable to demonstrate the task saving ability.
+static volatile uint32_t verificationCounter = 0;
 
 /**
  * @brief An example of a standard, periodic cooperatively scheduled task.
@@ -13,10 +16,9 @@
  * then call `yieldCurrentTask()` to hand control back to the scheduler.
  */
 
-// The example code uses a uint32 variable to demonstrate the task saving ability.
-static volatile uint32_t verificationCounter = 0;
-
 [[noreturn]] void exampleScheduledTask() {
+    // Yield at the begging to skip tick 0, allowing the mcu to setup
+    yieldCurrentTask();
     while (true) {
         printToUSART("Count: ");
         printToUSART(verificationCounter++);
@@ -38,6 +40,8 @@ static volatile uint32_t verificationCounter = 0;
  */
 
 [[noreturn]] void exampleInterruptTask() {
+    // Yield at the begging to skip tick 0, allowing the mcu to setup
+    yieldCurrentTask();
     while (true) {
         printToUSART("--- [INTERRUPT PREEMPTION START] ---\n");
         printToUSART("Captured Counter State: ");
@@ -81,6 +85,8 @@ void registerUserTasks() {
     /*END USER TASK REGISTRATION*/
 }
 
+static uint32_t userSeed = 98765;
+
 /**
  * @brief Simulates an external hardware trigger or event controller and fires exactly every 1 ms.
  * * For an interrupt task to execute, an external driver or timer must manually
@@ -92,7 +98,6 @@ void registerUserTasks() {
  * task you registered, index 2 will point to the second task you registered etc.
  */
 
-static uint32_t userSeed = 98765;
 static uint32_t getUserRandom(int range) { // Used to find a random number
     userSeed = (1103515245 * userSeed + 12345) % 2147483648;
     return (userSeed % range) + 1;

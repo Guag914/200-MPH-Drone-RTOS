@@ -19,6 +19,10 @@ PendSV_Handler:
     LDR R1, [R1]
     STR R0, [R1]
 
+    LDR R1, =currExcReturnAddress
+    LDR R1, [R1]
+    STR LR, [R1]
+
     LDR R1, =nextTaskAddress
     LDR R1, [R1]
     LDR R0, [R1]
@@ -26,5 +30,10 @@ PendSV_Handler:
     LDMIA R0!, {R4-R11}
     VLDMIA R0!, {S16-S31}
     MSR PSP, R0
+
+    LDR R1, =nextExcReturnAddress
+    LDR R1, [R1]
+    LDR LR, [R1]
+
     CPSIE I
     BX LR

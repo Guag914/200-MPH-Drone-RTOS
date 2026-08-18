@@ -5,7 +5,11 @@
 #ifndef BUFFER_POPULATION_H
 #define BUFFER_POPULATION_H
 
-#define HW_UART_BUFFER_SIZE 64
+#define CRSF_RING_BUFFER_SIZE 52
+#define IMU_RING_BUFFER_SIZE 52
+#define BATTERY_ADC_BUFFER_SIZE 4
+#define BARO_RING_BUFFER_SIZE 12
+#define GPS_RING_BUFFER_SIZE 192
 
 #include <stdint.h>
 
@@ -13,6 +17,8 @@
 struct IMURawPacket { uint8_t bytes[12]; };
 struct CRSFPacket { uint8_t bytes[26]; };
 struct ADCPacket { float bytes[2]; };
+struct BaroRawPacket { uint8_t bytes[8]; };
+struct GPSPacket {char bytes[96]; };
 
 // Global function declarations
 IMURawPacket populateIMUBuffer();
@@ -26,13 +32,21 @@ extern void startMotor2_DMATransfer();
 extern void startMotor3_DMATransfer();
 extern void startMotor4_DMATransfer();
 
-extern ADCPacket injectBatteryADCBuffer();
+extern ADCPacket populateBatteryADCBuffer();
 
 extern void startBatteryADC_DMA();
+
 extern void startBaro_DMATransfer();
+extern BaroRawPacket populateBarometerBuffer();
 
-extern uint8_t imuRawBuffer[12];
-extern uint8_t crsfRingBuffer[HW_UART_BUFFER_SIZE];
+extern void startGPS_DMARead();
+extern GPSPacket populateGPSBuffer();
 
+// extern uint8_t imuRawBuffer[12];
+extern uint8_t imuRingBuffer[IMU_RING_BUFFER_SIZE];
+extern uint8_t crsfRingBuffer[CRSF_RING_BUFFER_SIZE];
+extern  uint16_t batteryADCRingBuffer[BATTERY_ADC_BUFFER_SIZE];
+extern uint8_t baroRingBuffer[BARO_RING_BUFFER_SIZE];
+extern char gpsRingBuffer[GPS_RING_BUFFER_SIZE];
 
 #endif // BUFFER_POPULATION_H

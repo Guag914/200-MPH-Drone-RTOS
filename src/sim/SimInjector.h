@@ -8,12 +8,16 @@
 #include "../flight/BufferPopulation.h"
 #include "../flight/Helpers.h"
 
-extern IMURawPacket populateIMUMockBuffer();
-extern CRSFPacket populateCRSFMockBuffer();
+extern void injectMockIMUDMA();
+extern void injectMockCRSFDMA();
 
-extern void updateMockBaroBuffer(float targetPressurePa, float targetTempC);
 extern BaroTrim initMockBarometer();
+extern void injectMockBaroDMA();
 
-extern ADCPacket injectMockBatteryADCBuffer();
+extern void injectMockADCDMA();
+void injectMockGPSDMA();
+
+extern volatile uint32_t mock_LISR;
+extern volatile uint32_t mock_HISR;
 
 #endif //DRONE_RTOS_SIMINJECTOR_H

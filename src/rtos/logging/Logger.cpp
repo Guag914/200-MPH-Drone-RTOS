@@ -2,11 +2,11 @@
 // Created by Akshay Gillett on 7/16/26.
 //
 
-#include "Logger.h"
+#include "./Logger.h"
 
 #include <stdint.h>
 #include <string>
-#include "../flight/flight_control.h"
+#include "../../flight/flight_control.h"
 
 #include "stm32f756xx.h"
 
@@ -24,6 +24,7 @@
     }
 #endif
 
+//type overloads for logging other types
 void printToUSART(const char* str) {
     if (!str) return;
     while (*str) {

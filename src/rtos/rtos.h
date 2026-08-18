@@ -7,7 +7,7 @@
 #ifdef __cplusplus
 
 #define MAX_TASKS 20
-#define DEFAULT_STACK 1024
+#define DEFAULT_STACK 256
 #define SYSTICK_BASE_ADDRESS (0xE000E010UL)
 
 enum class TaskState : uint8_t {
@@ -36,6 +36,7 @@ struct TaskControlBlock {
     TaskState taskState;
 
     TaskType taskType;
+    uint32_t excReturn;
 };
 
 bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, const char* textName);
@@ -53,6 +54,12 @@ extern "C" {
 void start_drone_rtos(void);
 extern uint32_t** currTaskAddress;
 extern uint32_t** nextTaskAddress;
+
+extern uint32_t* currExcReturnAddress;
+extern uint32_t* nextExcReturnAddress;
+
+extern int currTaskIndex;
+extern int nextTaskIndex;
 
 extern int preemptDepth;
 extern int currLoopIndex;
