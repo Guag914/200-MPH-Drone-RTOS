@@ -111,7 +111,9 @@ struct HardwarePinMap {
 
     USART_TypeDef* crsf_uart;
     DMA_Stream_TypeDef* crsf_dma_stream;
-    uint32_t crsf_dma_channel;
+    uint32_t crsf_rx_dma_channel;
+    DMA_Stream_TypeDef* crsf_tx_dma_stream;
+    uint32_t crsf_tx_dma_channel;
 
     DMA_Stream_TypeDef* imu_dma_stream;
     SPI_TypeDef* imu_spi;
@@ -134,7 +136,7 @@ struct HardwarePinMap {
     uint32_t battery_current_channel;
 
     TIM_TypeDef* motor_timer;
-    TIM_TypeDef* motor3_timer;
+    TIM_TypeDef* alt_motor_timer;
 
     DMA_Stream_TypeDef* motor1_dma_stream;
     DMA_Stream_TypeDef* motor2_dma_stream;
@@ -142,6 +144,10 @@ struct HardwarePinMap {
     DMA_Stream_TypeDef* motor4_dma_stream;
 
     USART_TypeDef* osd_uart;
+    DMA_Stream_TypeDef* osd_tx_dma_stream;
+    DMA_Stream_TypeDef* osd_rx_dma_stream;
+    uint32_t osd_tx_dma_channel;
+    uint32_t osd_rx_dma_channel;
 
     //peripheral GPIOB pins to hardware map (led, buzzer etc.)
     GPIO_TypeDef* status_led_port;
@@ -169,10 +175,12 @@ inline HardwarePinMap currentBoardConfig = { //ensure to configure this properly
     //crsf data streams
     .crsf_uart = USART2,
     .crsf_dma_stream = DMA1_Stream5,
-    .crsf_dma_channel = 4,
+    .crsf_rx_dma_channel = 4,
+    .crsf_tx_dma_stream = DMA1_Stream6,
+    .crsf_tx_dma_channel = 4,
 
     //imu data streams
-    .imu_dma_stream = DMA1_Stream0, //UPDATE STMCUBEMX
+    .imu_dma_stream = DMA1_Stream2, //UPDATE STMCUBEMX
     .imu_spi = SPI3,
     .imu_spi_dma_channel = 0,
     .imu_cs_port = GPIOA,
@@ -194,15 +202,19 @@ inline HardwarePinMap currentBoardConfig = { //ensure to configure this properly
 
     //dshot motor timers + dma
     .motor_timer = TIM1, //map physical timer
-    .motor3_timer = TIM4,
+    .alt_motor_timer = TIM4,
 
-    .motor1_dma_stream = DMA2_Stream1,
+    .motor1_dma_stream = DMA1_Stream0,
     .motor2_dma_stream = DMA2_Stream2,
     .motor3_dma_stream = DMA1_Stream7,
     .motor4_dma_stream = DMA2_Stream4,
 
     //osd
     .osd_uart = USART6,
+    .osd_tx_dma_stream = DMA2_Stream7,
+    .osd_rx_dma_stream = DMA2_Stream1,
+    .osd_tx_dma_channel = 5,
+    .osd_rx_dma_channel = 5,
 
     //peripheral gpiob pins (misc for power)
     .status_led_port = GPIOB,
@@ -282,6 +294,18 @@ extern uint8_t gpsSpdPos[2];
 extern uint8_t gpsSatPos[2];
 
 extern uint8_t drnMsgPos[2];
+
+extern volatile uint16_t* ROLL_CH;
+extern volatile uint16_t* PITCH_CH;
+extern volatile uint16_t* YAW_CH;
+extern volatile uint16_t* THROTTLE_CH;
+extern volatile uint16_t* ARMED_CH;
+
+extern volatile uint16_t
+ch1, ch2, ch3,
+ch4, ch5, ch6,
+ch7, ch8, ch9,
+ch10, ch11;
 
 #ifdef __cplusplus
 }
