@@ -9,6 +9,9 @@
 .extern currTaskAddress
 .extern nextTaskAddress
 
+.extern currExcReturnAddress
+.extern nextExcReturnAddress
+
 PendSV_Handler:
     CPSID I
     MRS R0, PSP

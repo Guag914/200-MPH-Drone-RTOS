@@ -1,5 +1,5 @@
 //
-// Created by Akshay Gillett on 7/16/26.
+// Logger.h by Akshay Gillett on 7/16/26.
 //
 
 #ifndef DRONE_RTOS_LOGGER_H
@@ -8,6 +8,7 @@
 #ifdef __cplusplus
 #include <cstdint>
 #include <string>
+#include "../../flight/Helpers.h"
 
 extern void printToUSART(char c);
 extern void printToUSART(const char* str);
@@ -20,6 +21,7 @@ extern void printToUSART(double val);
 extern void printToUSART(bool b);
 extern void printToUSART(int c);
 extern void printToUSART(const std::string& c);
+void printToUSART(DShotFrame frame);
 
 extern void printToCLI(char c);
 extern void printToCLI(const char* str);

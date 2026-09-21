@@ -1,5 +1,5 @@
 //
-// Created by Akshay Gillett on 7/16/26.
+// Helpers.cpp by Akshay Gillett on 7/16/26.
 //
 
 #include "Helpers.h"
@@ -9,6 +9,7 @@
 #include <cstring>
 #include "./flight_control.h"
 #include "../rtos/rtos.h"
+#include "../sim/SimInjector.h"
 
 #define GYRO_CUTOFF_HZ 90.0f //11.11 ms
 #define LOOP_DT 0.001f //1 ms
@@ -129,6 +130,7 @@ uint8_t crc8_dvb_s2(const uint8_t* data, uint8_t len) { //used to add a checksum
     return crc;
 }
 
+//crsf helpers
 uint8_t formatCRSFFrame(uint8_t frameType, const uint8_t* payload, uint8_t payloadLen, uint8_t* outBuffer) {
     if (!outBuffer || (!payload && payloadLen > 0)) {
         return 0;
@@ -150,6 +152,11 @@ uint8_t formatCRSFFrame(uint8_t frameType, const uint8_t* payload, uint8_t paylo
     return payloadLen + 4;
 }
 
+//similar methods are just used to abstract the blocking transfer
+void sendCRSFTelemetry_DMA(const uint8_t* payload, uint8_t payloadLen) {
+    dmaBlockingTransfer(DMA1, currentBoardConfig.crsf_tx_dma_stream, reinterpret_cast<uint32_t>(payload), payloadLen);
+}
+
 //gps helpers
 int32_t parseNmeaCoord(const char* str, char dir) {
     if (!str || strlen(str) < 4) return 0;
@@ -166,6 +173,7 @@ int32_t parseNmeaCoord(const char* str, char dir) {
     return static_cast<int32_t>(decimalDegrees * 1e7);
 }
 
+//osd helpers
 void writeOSDString(uint8_t row, uint8_t col, char* str) {
     //create payload buffer (64)
     //idx 0 = flag (write)
@@ -190,16 +198,14 @@ void writeOSDString(uint8_t row, uint8_t col, char* str) {
     sendMSPFrame(182, payload, len + 4); //offset accounts for the headers
 }
 
+static uint8_t frame[64];
 void sendMSPFrame(uint8_t cmd, const uint8_t* payload, uint8_t payloadLen) {
+    uint8_t idx = 0;
     //create 64 frame buffer
     //add $, M, <, payloadSize, and cmd starting at idx 0
     //create the checksum by doing ^= payload[i]
     //append checksum
-
     //broadcast
-
-    uint8_t frame[64];
-    uint8_t idx = 0;
 
     //header is always $M< - tells vt an incoming frame is starting followed by specifics
     frame[idx++] = '$';
@@ -215,11 +221,43 @@ void sendMSPFrame(uint8_t cmd, const uint8_t* payload, uint8_t payloadLen) {
         checksum ^= payload[i]; //calculates checksum
     }
 
-    //broadcast
-    for (uint8_t i = 0; i < idx; i++) {
-        while (!(currentBoardConfig.osd_uart->ISR & USART_ISR_TXE)) {}
-        currentBoardConfig.osd_uart->TDR = frame[i];
+    frame[idx++] = checksum;
+
+    //manual blocking system
+    // for (uint8_t i = 0; i < idx; i++) {
+    //     while (!(currentBoardConfig.osd_uart->ISR & USART_ISR_TXE)) {}
+    //     currentBoardConfig.osd_uart->TDR = frame[i];
+    // }
+
+    //dma blocking system
+    dmaBlockingTransfer(DMA2, currentBoardConfig.osd_tx_dma_stream, reinterpret_cast<uint32_t>(frame), idx);
+}
+
+void sendMSPResponse(uint8_t cmd, uint8_t* payload, uint8_t size) {
+    static uint8_t txBuffer[32]; //sized for largest possible
+
+    txBuffer[0] = '$';
+    txBuffer[1] = 'M';
+    txBuffer[2] = '>';
+    txBuffer[3] = size;
+    txBuffer[4] = cmd;
+
+    uint8_t crc = size ^ cmd;
+
+    for (uint8_t i = 0; i < size; i++) {
+        txBuffer[5 + i] = payload[i];
+        crc ^= payload[i];
     }
+    txBuffer[5 + size] = crc;
+
+    //manual blocking
+    // for (uint8_t i = 0; i < size; i++) {
+    //     while (!(currentBoardConfig.osd_uart->ISR & USART_ISR_TXE)) {}
+    //     currentBoardConfig.osd_uart->TDR = frame[i];
+    // }
+
+    //dma blocking
+    dmaBlockingTransfer(DMA2, currentBoardConfig.osd_tx_dma_stream, reinterpret_cast<uint32_t>(txBuffer), size + 6);
 }
 
 //baro helpers
@@ -305,3 +343,21 @@ uint32_t getUnusedStackWords(const uint8_t taskIdx) {
 }
 
 //blackboxhelpers
+
+//cli helpers
+void assignChannel(volatile uint16_t*& ch, uint16_t chNum) {
+    switch (chNum) {
+            case 1: ch = &ch1; break;
+            case 2: ch = &ch2; break;
+            case 3: ch = &ch3; break;
+            case 4: ch = &ch4; break;
+            case 5: ch = &ch5; break;
+            case 6: ch = &ch6; break;
+            case 7: ch = &ch7; break;
+            case 8: ch = &ch8; break;
+            case 9: ch = &ch9; break;
+            case 10: ch = &ch10; break;
+            case 11: ch = &ch11; break;
+        default: break;
+    }
+}

@@ -1,3 +1,7 @@
+//
+// rtos.h by Akshay Gillett on 7/9/26.
+//
+
 #ifndef DRONE_RTOS_H
 #define DRONE_RTOS_H
 
@@ -7,7 +11,7 @@
 #ifdef __cplusplus
 
 #define MAX_TASKS 20
-#define DEFAULT_STACK 256
+#define DEFAULT_STACK 512
 #define SYSTICK_BASE_ADDRESS (0xE000E010UL)
 
 enum class TaskState : uint8_t {
@@ -75,6 +79,8 @@ extern int activeTasks;
 extern void decideNextInterruptTask(TaskControlBlock* interruptTask);
 extern void decideNextScheduledTask();
 extern bool protectStackGuard(uint32_t guardBaseAddr);
+
+extern TaskControlBlock* findTaskByName(const char *textName);
 
 extern "C" bool switchPending;
 

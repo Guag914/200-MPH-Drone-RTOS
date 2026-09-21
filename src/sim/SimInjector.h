@@ -1,5 +1,5 @@
 //
-// Created by Akshay Gillett on 7/18/26.
+// SimInjector.h by Akshay Gillett on 7/18/26.
 //
 
 #ifndef DRONE_RTOS_SIMINJECTOR_H
@@ -16,6 +16,8 @@ extern void injectMockBaroDMA();
 
 extern void injectMockADCDMA();
 void injectMockGPSDMA();
+
+extern void injectMockOSDDMA();
 
 extern volatile uint32_t mock_LISR;
 extern volatile uint32_t mock_HISR;

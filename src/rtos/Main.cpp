@@ -1,5 +1,5 @@
 //
-// Created by Akshay Gillett on 7/9/26.
+// Main.cpp by Akshay Gillett on 7/9/26.
 //
 
 #include <atomic>
@@ -32,12 +32,14 @@ static uint32_t pendingInterruptMask = 0;
 //sim helpers
 #ifdef SIMULATION
 
-static void injectMockBuffers() {
+static void injectMockBuffers() { //used for "mock" dma
     injectMockIMUDMA();
     injectMockCRSFDMA();
     injectMockADCDMA();
-    injectMockBaroDMA();
     injectMockGPSDMA();
+    injectMockOSDDMA();
+
+    //injectMockBaroDMA() was removed as it is called 'on demand' in population when necessary
 }
 
 static void executeRandomInterrupts() {
@@ -58,10 +60,16 @@ static void executeRandomInterrupts() {
         mock_HISR |= DMA_HISR_TCIF5;
         NVIC_SetPendingIRQ(DMA1_Stream5_IRQn);
     }
+
 }
 #endif
 
+//irq handlers - get called automatically by dma or manually when simulating
 extern "C" void DMA1_Stream0_IRQHandler(void) {
+#ifdef DEBUG
+    printToUSART("[DMA-IRQ] Calling DMA1_Stream0_IRQHandler | IMUControlLoop\n");
+#endif
+
 #ifdef SIMULATION
     uint32_t flags = mock_LISR;
     mock_LISR = 0;
@@ -69,18 +77,31 @@ extern "C" void DMA1_Stream0_IRQHandler(void) {
     uint32_t flags = DMA1->LISR;
 #endif
 
+    auto callTask = []() {
+        TaskControlBlock* task = findTaskByName("imuControlLoop"); //use lambda for less redundant code
+        if (task) { decideNextInterruptTask(task); } //ensure the find doesn't throw a nullptr
+        else {
+            drone.currentSystemState = FlightState::ERROR;
+            setEventMessage(drone.errorMSG, ERROR::CANNOT_FIND_TASK_ICL);
+        }
+    };
+
     if (flags & DMA_LISR_HTIF0) { //half transfer
         DMA1->LIFCR = DMA_LIFCR_CHTIF0; //clear flag
-        decideNextInterruptTask(&taskControlBlocks[1]); //call method
+        callTask(); //call lambda
     }
 
     if (flags & DMA_LISR_TCIF0) { //full transfer
         DMA1->LIFCR = DMA_LIFCR_CTCIF0; //clear flag
-        decideNextInterruptTask(&taskControlBlocks[1]); //call method
+        callTask(); //call lambda
     }
 }
 
 extern "C" void DMA1_Stream5_IRQHandler(void) {
+#ifdef DEBUG
+    printToUSART("[DMA-IRQ] Calling DMA1_Stream5_IRQHandler | crsfControlLoop\n");
+#endif
+
 #ifdef SIMULATION
     uint32_t flags = mock_HISR;
     mock_HISR = 0;
@@ -88,14 +109,23 @@ extern "C" void DMA1_Stream5_IRQHandler(void) {
     uint32_t flags = DMA1->HISR; //streams 0-3 use LISR while streams 4-7 use HISR
 #endif
 
+    auto callTask = []() {
+        TaskControlBlock* task = findTaskByName("crsfControlLoop"); //use lambda for less redundant code
+        if (task) { decideNextInterruptTask(task); } //ensure the find doesn't throw a nullptr
+        else {
+            drone.currentSystemState = FlightState::ERROR; //throw errors on higher level tasks as without the drone will crash or fly away
+            setEventMessage(drone.errorMSG, ERROR::CANNOT_FIND_TASK_CRSF);
+        }
+    };
+
     if (flags & DMA_HISR_HTIF5) {
         DMA1->HIFCR = DMA_HIFCR_CHTIF5;
-        decideNextInterruptTask(&taskControlBlocks[2]);
+        callTask();
     }
 
     if (flags & DMA_HISR_TCIF5) {
         DMA1->HIFCR = DMA_HIFCR_CTCIF5;
-        decideNextInterruptTask(&taskControlBlocks[2]);
+        callTask();
     }
 }
 
@@ -109,7 +139,7 @@ static bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, co
         const uint32_t totalBytes = (stackSizeWords * 4) + GUARD_REGION_SIZE;
         auto* newStack = static_cast<uint32_t*>(aligned_alloc(GUARD_REGION_SIZE, totalBytes));
 
-    if (newStack == nullptr) {
+    if (newStack == nullptr) { //max mem exceded (out of ram/sram on actual chip - not just software)
         drone.currentSystemState = FlightState::ERROR;
         setEventMessage(drone.errorMSG, ERROR::INIT_HEAP_MEM);
         return false;
@@ -128,7 +158,7 @@ static bool initializeNewTask(void (*functionAddress)(), uint32_t timePeriod, co
 
         const uint32_t totalWords = stackSizeWords + (GUARD_REGION_SIZE / sizeof(uint32_t));
         for (uint32_t i = 8; i < totalWords; i++) {
-            newStack[i] = 0xA5A5A5A5;
+            newStack[i] = 0xA5A5A5A5; //allocates a specific "word" which is used for task mem management (helps detect overflows + mem management task)
         }
 
         //check floating point registers
@@ -213,7 +243,7 @@ bool protectStackGuard(const uint32_t guardBaseAddr) {
 
 uint32_t** currTaskAddress = nullptr;
 uint32_t** nextTaskAddress = nullptr;
-uint32_t* currExcReturnAddress = nullptr;
+uint32_t* currExcReturnAddress = nullptr; //used for task recollection (bx lr bug) because r0 sometimes gets corrupted
 uint32_t* nextExcReturnAddress = nullptr;
 
 //universal helpers to stop pendSV getting overwritten
@@ -271,6 +301,7 @@ void yieldCurrentTask() {
     __ISB();
 }
 
+
 void decideNextInterruptTask(TaskControlBlock* interruptTask) {
     __disable_irq(); //guards against pointers being overrwritten by simultaneous interrupts
 
@@ -300,12 +331,13 @@ void decideNextInterruptTask(TaskControlBlock* interruptTask) {
         //make the last task READY so it can run next tick (or after curr task is saved)
         taskControlBlocks[currTaskIndex].taskState = TaskState::READY;
         currTaskAddress = &(taskControlBlocks[currTaskIndex].topOfStack);
+        currExcReturnAddress = &(taskControlBlocks[currTaskIndex].excReturn);
     } else {
         if (preemptDepth >= MAX_TASKS) {
             drone.currentSystemState = FlightState::ERROR;
             setEventMessage(drone.errorMSG, ERROR::PREEMPT_OVERFLOW);
         } else {
-            preemptStack[preemptDepth++] = pendingWinnerIndex;
+            // preemptStack[preemptDepth++] = pendingWinnerIndex;
             taskControlBlocks[pendingWinnerIndex].taskState = TaskState::READY;
         }
     }
@@ -326,9 +358,8 @@ void decideNextInterruptTask(TaskControlBlock* interruptTask) {
     interruptTask->taskState = TaskState::RUNNING;
     pendingWinnerIndex = currTaskIndex;
 
+    __enable_irq(); //enable before pendsv
     SCB->ICSR = SCB_ICSR_PENDSVSET_Msk; //trigger pendsv to switch
-
-    __enable_irq();
 }
 
 void decideNextScheduledTask() {
@@ -348,14 +379,14 @@ void decideNextScheduledTask() {
         }
     }
 
-    if (highestPriorityTaskIndex != -1) {
+    if (highestPriorityTaskIndex != -1 ) {
 
         int oldTaskIndex = currTaskIndex;
 
         //force previous periodic tasks back into BLOCKED state until their timer expires
         if (oldTaskIndex != 0 && taskControlBlocks[oldTaskIndex].taskType == TaskType::SCHEDULED) {
             taskControlBlocks[oldTaskIndex].taskState = TaskState::BLOCKED;
-        } else if (oldTaskIndex == 0) {
+        } else {
             taskControlBlocks[oldTaskIndex].taskState = TaskState::READY;
         }
 
@@ -367,21 +398,32 @@ void decideNextScheduledTask() {
         currExcReturnAddress = &(taskControlBlocks[currTaskIndex].excReturn);
         nextExcReturnAddress = &(taskControlBlocks[nextTaskIdx].excReturn);
 
-        // taskControlBlocks[currTaskIndex].taskState = TaskState::READY; //set it to running so it restores where it left off
+        //  taskControlBlocks[currTaskIndex].taskState = TaskState::READY; // set it to running so it restores where it left off
         currTaskIndex = nextTaskIdx;
         taskControlBlocks[currTaskIndex].taskState = TaskState::RUNNING;
         taskControlBlocks[currTaskIndex].lastRunTime = globalSystemTicks;
 
+        __enable_irq(); //disable lock BEFORE sending pend
+
         SCB->ICSR = SCB_ICSR_PENDSVSET_Msk; //trigger pendsv
 
-        __enable_irq(); //disable lock
         __ISB(); //forces instructions from memory instantly - refresh
     }
 
     __enable_irq();
 }
 
+TaskControlBlock* findTaskByName(const char *textName) {
+    for (int i = 0; i < activeTasks; i++) {
+        if (taskControlBlocks[i].taskName == textName) {
+            return &taskControlBlocks[i];
+        }
+    }
+    return nullptr;
+}
+
 extern "C" void SysTick_Handler() {
+    HAL_IncTick();
     globalSystemTicks++;
 
     if (preemptDepth == 0) {
@@ -474,7 +516,23 @@ static void initSystemGPIOClocks() {
     (void) reg;
 }
 
+static void configSTLINK() {
+    // 1. Turn on the clocks for GPIOD and USART3
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIODEN;
+    RCC->APB1ENR |= RCC_APB1ENR_USART3EN;
+    __DSB(); // Wait for clock stabilization
+
+    // 2. Mux PD8 (TX) and PD9 (RX) to Alternate Function Mode (0b10)
+    GPIOD->MODER &= ~(GPIO_MODER_MODER8 | GPIO_MODER_MODER9);
+    GPIOD->MODER |= (GPIO_MODER_MODER8_1 | GPIO_MODER_MODER9_1);
+
+    // 3. Set the specific alternate function to AF7 (USART)
+    GPIOD->AFR[1] &= ~((0xF << 0) | (0xF << 4)); // Clear AFRH8 and AFRH9
+    GPIOD->AFR[1] |= (7 << 0) | (7 << 4);        // Set AF7 for both pins
+}
+
 extern "C" void start_drone_rtos() {
+    //fpu
     SCB->CPACR |= (0xF << 20);
     __DSB(); __ISB();
     FPU->FPCCR |= FPU_FPCCR_ASPEN_Msk;
@@ -484,28 +542,25 @@ extern "C" void start_drone_rtos() {
     MPU->CTRL = MPU_CTRL_PRIVDEFENA_Msk | MPU_CTRL_ENABLE_Msk;
     SCB->SHCSR |= SCB_SHCSR_MEMFAULTENA_Msk; //enable fault with its own handler
 
+    configSTLINK();
+
+    //set baud rate properly
+    currentBoardConfig.log_uart->BRR = HAL_RCC_GetPCLK1Freq() / 115200;
+
     //enable gpio clocks
     initSystemGPIOClocks();
 
     //calibration
     printToUSART("Calibrating sensors. Keep drone still...\n");
-    sensorCalibration();
 
-    //start nvic regardless because testing also uses it
-    NVIC_SetPriority(DMA1_Stream0_IRQn, 1);
-    NVIC_EnableIRQ(DMA1_Stream0_IRQn); //enabled irq interrupt which calls parsing
-
-    startCRSF_DMARead();
-    NVIC_SetPriority(DMA1_Stream5_IRQn, 2);
-    NVIC_EnableIRQ(DMA1_Stream5_IRQn);
-
-#if !(SIMULATION)
-    //start dma
-    startIMU_DMARead(); //converted to circular buffer
-    startBatteryADC_DMA();
-    startBaro_DMATransfer();
-    startGPS_DMARead();
+    //get board stats
+#ifdef DEBUG
+    printToUSART("[BOOT] SYSCLK source (0=HSI,1=HSE,2=PLL): ");
+    printToUSART((uint32_t)((RCC->CFGR >> 2) & 3));
+    printToUSART("\n");
 #endif
+
+    sensorCalibration();
 
     //resets
     currTaskIndex = 0;
@@ -519,6 +574,7 @@ extern "C" void start_drone_rtos() {
 
     currTaskAddress = &(taskControlBlocks[0].topOfStack);
 
+
     #ifdef  USER_TASKS
         registerUserTasks();
     #else
@@ -526,29 +582,23 @@ extern "C" void start_drone_rtos() {
 
     //interrupt tasks
         //needs external python simulation (in)
-        initializeNewTask(imuControlLoop,"IMUControlLoop", DEFAULT_STACK);
+        initializeNewTask(imuControlLoop,"imuControlLoop", DEFAULT_STACK*2);
+        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
+        taskControlBlocks[activeTasks - 1].priority = 16;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
+
+        //needs external python simulation (in)
+        initializeNewTask(crsfControlLoop, "crsfControlLoop", DEFAULT_STACK*2);
         protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
         taskControlBlocks[activeTasks - 1].priority = 15;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
 
-        //needs external python simulation (in)
-        initializeNewTask(crsfParsing, "CRSFParsing", DEFAULT_STACK);
-        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
-        taskControlBlocks[activeTasks - 1].priority = 14;
-        taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
-
-        // needs external python simulation (out)
-        initializeNewTask(dShotGeneration, "dShotGeneration", DEFAULT_STACK); //task 3
-        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
-        taskControlBlocks[activeTasks - 1].priority = 13;
-        taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
-
-        //needs external python simulation (in) - add keybinds for certain actions
-        initializeNewTask(flightStateMachine, "flightStateMachine", DEFAULT_STACK); //task 4
-        taskControlBlocks[activeTasks - 1].priority = 12;
-        taskControlBlocks[activeTasks - 1].taskState = TaskState::BLOCKED;
-
     //scheduled tasks
+        initializeNewTask(respondToVTX, 20, "respondToVTX", DEFAULT_STACK); //was blocking due to dma checks (which don't exist in simulation)
+        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
+        taskControlBlocks[activeTasks - 1].priority = 12;
+        taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
+
         //needs external python simulation  (out)
         initializeNewTask(osdUpdate, 16, "osdUpdate", DEFAULT_STACK); //about 60 hz
         protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
@@ -575,13 +625,12 @@ extern "C" void start_drone_rtos() {
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
         //needs external python simulation (in)
-        initializeNewTask(gpsParser, 100, "gpsParser", DEFAULT_STACK);
-        protectStackGuard(reinterpret_cast<uint32_t>(taskControlBlocks[activeTasks-1].taskStack) + taskControlBlocks[activeTasks-1].stackSizeWords * 4);
+        initializeNewTask(gpsParser, 100, "gpsParser", DEFAULT_STACK); //fix injector
         taskControlBlocks[activeTasks - 1].priority = 6;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
         //needs external python simulation (in)
-        initializeNewTask(readBarometerRegisters, 20, "readBarometerRegistersadBarometerRegisters", DEFAULT_STACK);
+        initializeNewTask(readBarometerRegisters, 20, "readBarometerRegisters", DEFAULT_STACK); //need to fix injector
         taskControlBlocks[activeTasks - 1].priority = 5;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
@@ -591,11 +640,11 @@ extern "C" void start_drone_rtos() {
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
         //needs external python simulation (in, out) - already done (in)
-        initializeNewTask(usbCLI, 20, "usbCLI", DEFAULT_STACK);
+        initializeNewTask(usbCLI, 20, "usbCLI", DEFAULT_STACK); //need to add permanent blackbox + changeable osd
         taskControlBlocks[activeTasks - 1].priority = 3;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
-        initializeNewTask(iwdgTask, 2000, "iwdgTask", DEFAULT_STACK);
+        initializeNewTask(iwdgTask, 200, "iwdgTask", DEFAULT_STACK);
         taskControlBlocks[activeTasks - 1].priority = 2;
         taskControlBlocks[activeTasks - 1].taskState = TaskState::READY;
 
@@ -606,10 +655,33 @@ extern "C" void start_drone_rtos() {
 #endif
 
     /*===--- END TASK ENTRY ---===*/
+
+
     #endif
+
+#if !(SIMULATION)
+    //start dma
+    startIMU_DMARead(); //converted to circular buffer
+    startCRSF_DMARead();
+    startBatteryADC_DMA();
+    startGPS_DMARead();
+    startOSD_DMARead();
+
+    //init dma for osd, baro, and telemetry
+    initOSD_DMATransfer(); //NOT for normal OSD - used in dual vtx connection
+    initTTX_DMATransfer();
+    initBaro_DMATransfer();
+#endif
 
     //set pendsv to lowest priority interrupt
     NVIC_SetPriority(PendSV_IRQn, 0xFF); //calls systick which executes task loop
+
+    //start nvic regardless because testing also uses it
+    NVIC_SetPriority(DMA1_Stream0_IRQn, 1); //imu
+    NVIC_EnableIRQ(DMA1_Stream0_IRQn); //enabled irq interrupt which calls parsing
+
+    NVIC_SetPriority(DMA1_Stream5_IRQn, 2); //crsf
+    NVIC_EnableIRQ(DMA1_Stream5_IRQn);
 
     SysTick->LOAD = 215999UL;
     SysTick->VAL  = 0UL;
@@ -629,29 +701,3 @@ extern "C" void start_drone_rtos() {
     printToUSART("Booting Drone RTOS Scheduler Kernel...\n\n");
     executeTaskLoop();
 }
-
-//EXISTING TASKS (JULY 31ST):
-//Debug interrupt race condition
-//Debug new stack overflow in the interrupts
-//Add premium betaflight features like expo, gui, and proper cli
-
-//BOOTLOADING (AUGUST 5TH):
-//Figure out the proper way which code will be loaded (e.g. invisible pins, or via main microcontroler to others)
-
-//TASK WORK (JULY 26TH):
-//1. OSD
-//2. Barometer parsing
-//3. CHECK usbc port in parsing in the cli + update hardware specs
-//4. CHECK current sensor readings (maybe reading from another instrument right now)
-//5. CHECK that dshot is being pushed out the correct port
-
-//DRIVERS WORK (JULY 27TH):
-//1. Reciever module config driver (bootloading process)
-//2. ESC driver work - DO NOT WRITE BY HAND - Flash other firmware e.g. BL heli
-//ALL CODE SHOULD BE DONE, TESTED, AND FLASHED BY AUGUST 20TH
-//ALL HARDWARE PCB'S SHOULD BE DONE AND PRINTED BY AUGUST 20TH TO GIVE TIME FOR REVISIONS
-//ALL CAD SHOULD BE DONE BY AUGUST 10TH TO GIVE TIME FOR PRINTING
-
-//CAD:
-//1. Research aerodynamics and come up with initial frame by August 20th
-//2. Simulate the frame + make changes (august 30th)

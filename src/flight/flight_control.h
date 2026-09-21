@@ -1,3 +1,8 @@
+//
+// flight_control.h by Akshay Gillett on 7/12/26.
+//
+
+
 #ifndef FLIGHT_CONTROL_H
 #define FLIGHT_CONTROL_H
 
@@ -53,6 +58,13 @@ struct ERROR {
     static constexpr std::string_view PREEMPT_OVERFLOW = "PREEMPT STACK OVERFLOW!\n";
     static constexpr std::string_view GUARD_BREACH = "TOP GUARD BREACH!\n";
     static constexpr std::string_view CRSF_CORRUPT_STREAM = "CORRUPTED DATA INPUT STREAM!\n";
+    static constexpr std::string_view CANNOT_FIND_TASK_ICL = "CANNOT FIND TASK 'IMUControlLoop'!\n";
+    static constexpr std::string_view CANNOT_FIND_TASK_CRSF = "CANNOT FIND TASK 'CRSFParsing'!\n";
+    static constexpr std::string_view CANNOT_FIND_TASK_RBR = "CANNOT FIND TASK 'readBarometerRegisters'!\n";
+    static constexpr std::string_view CANNOT_FIND_TASK_TTX = "CANNOT FIND TASK 'telemetryTX'!\n";
+    static constexpr std::string_view CANNOT_FIND_TASK_OSD = "CANNOT FIND TASK 'osdUpdate'!\n";
+    static constexpr std::string_view CANNOT_FIND_TASK_VTX = "CANNOT FIND TASK 'respondToVTX'!\n";
+
 };
 
 struct DroneState {
@@ -251,12 +263,16 @@ extern void stateEstimation();
 extern void flightLoop();
 
 //interrupts + scheduled
-[[noreturn]] extern void crsfParsing();
+[[noreturn]] extern void crsfControlLoop();
+
+extern void crsfParsing(); //moved into crsfControlLoop parent
 [[noreturn]] extern void radioLinkFailSafe();
 [[noreturn]] extern void powerManagement();
 [[noreturn]] extern void lowLevelFailSafe();
-[[noreturn]] extern void dShotGeneration();
-[[noreturn]] extern void flightStateMachine();
+//both merged with their parent functions
+extern void dShotGeneration();
+extern void flightStateMachine();
+
 [[noreturn]] extern void imuControlLoop();
 [[noreturn]] extern void iwdgTask();
 [[noreturn]] extern void updatePeripherals();
@@ -267,6 +283,7 @@ extern void flightLoop();
 [[noreturn]] extern void checkStackHealth();
 [[noreturn]] extern void logToBlackBox();
 [[noreturn]] extern void telemetryTX();
+[[noreturn]] extern void respondToVTX();
 
 #endif // __cplusplus
 

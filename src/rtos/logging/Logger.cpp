@@ -1,5 +1,5 @@
 //
-// Created by Akshay Gillett on 7/16/26.
+// Logger.cpp by Akshay Gillett on 7/16/26.
 //
 
 #include "./Logger.h"
@@ -9,6 +9,7 @@
 #include "../../flight/flight_control.h"
 
 #include "stm32f756xx.h"
+#include "../../flight/Helpers.h"
 
 //normal simulation debug prints
 #if defined(SIMULATION) || defined(USER_TASKS)
@@ -175,4 +176,11 @@ void printToCLI(double val) {
 void printToCLI(bool b) {
     if (b) { printToCLI("true"); }
     else { printToCLI("false"); }
+}
+
+void printToUSART(DShotFrame frame) {
+    for (int i = 0; i < sizeof(frame.bits); i++) {
+        printToUSART(frame.bits[i]);
+        printToUSART(", ");
+    }
 }

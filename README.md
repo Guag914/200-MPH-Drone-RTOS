@@ -30,6 +30,7 @@ I have set up an interactive simulation environment using **Renode** so that rev
 During the simulation, a low-priority background task continuously increments a counter. To simulate real-world asynchronous hardware events, an inline random-number generator inside the `SysTick_Handler` periodically triggers a high-priority interrupt task. You will see the interrupt seamlessly hijack the CPU, print the perfectly preserved counter state, run a heavy processing delay, and hand control back to the exact instruction where the counter left off.
 
 ### How to Run:
+*Disclaimer: I did not write any of the .bat files you see (those were done by AI as I do not have a Windows device)*
 1. **Install Renode** on your machine ([Download Renode](https://renode.io/) or run `brew install renode` on macOS / `sudo apt install renode` on Linux).
 2. **Clone this repository** and navigate to the root directory:
    ```bash
@@ -117,14 +118,20 @@ Once you have modified `User_Tasks/user_tasks.cpp` with your own loops, you must
   * `PendSV_Handler.S` - Core assembly routine saving/restoring CPU context registers (**R4-R11**).
 
 ### Roadmap: 
-| Phase | Name                 | Description                                                                              | Status            |
-|-------|----------------------|------------------------------------------------------------------------------------------|-------------------|
-| #1    | Custom RTOS Kernel   | Execute both **preemptive** and **cooperative** tasks with a priority-based system       | ***Complete***    |
-| #2    | Flight Dynamics      | **PT1** Low-Pass Filtering, **Axis Alignment** Mapping, OSD Warn **State Machine**       | ***Complete***    |
-| #3    | Controller Loops     | High rate **PID** controller loop and **DShot** generation                               | ***Complete***    |
-| #4    | Hardware Integration | Full Software-In-Loop (SIL) simulation for the ESC and transmitter modules               | ***In Progress*** |
-| #5    | User Features        | CLI for config, CPP bootloader for microcontrollers, USBC integration for bench testing  | ***In Progress*** |
+| Phase | Name                 | Description                                                                              | Status         |
+|-------|----------------------|------------------------------------------------------------------------------------------|----------------|
+| #1    | Custom RTOS Kernel   | Execute both **preemptive** and **cooperative** tasks with a priority-based system       | ***Complete*** |
+| #2    | Flight Dynamics      | **PT1** Low-Pass Filtering, **Axis Alignment** Mapping, OSD Warn **State Machine**       | ***Complete*** |
+| #3    | Controller Loops     | High rate **PID** controller loop and **DShot** generation                               | ***Complete*** |
+| #4    | Hardware Integration | Full Software-In-Loop (SIL) simulation for the ESC and transmitter modules               | ***Complete*** |
+| #5    | User Features        | CLI for config, CPP bootloader for microcontrollers, USBC integration for bench testing  | ***Complete*** |
 
 As for a timeline, I am hoping to get the entire system done before around July 27th. Of course when my friend finishes the hardware portion of the project, we will merge the custom PCBs and the operating system to create a fully functional high-speed drone. 
 
 The first version of the drone will likely be done around mid-August, with the final version being completed around the end of August.
+
+Edit: Essentially with school kicking in, it has been super hard to be consistent with work times and everything, however my friend managed to finish a substantial portion of the PCB's, and I managed to get the RTOS booting on an actual STM32 Nucelo board. 
+
+Although there are a few bugs still left in the code (mainly having to do with the scheduling of interrupt tasks) I can confidently say that 95% of my code works on actual hardware. With a few more hard weeks of coding, I should be able to completely debug everything, make all the firmware + bootloader for compnents such as the ESC and RM, and test everything that the actual drone will run (by simulating all my peripherals on a second nucleo).
+
+A realistic deadline for all the PCB's (from my friend) and my RTOS being ready to merge is around mid-late November.

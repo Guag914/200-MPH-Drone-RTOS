@@ -1,5 +1,5 @@
 //
-// Created by Akshay Gillett on 7/18/26.
+// Siminjector.cpp by Akshay Gillett on 7/18/26.
 //
 
 #include "SimInjector.h"
@@ -8,6 +8,7 @@
 #include "../flight/flight_control.h"
 #include "../flight/Helpers.h"
 #include "../rtos/logging/Logger.h"
+#include "../rtos/rtos.h"
 
 //sole purpose is to generate random numbers for the sim
 //not meant to be used ouside anywhere
@@ -46,7 +47,7 @@ void injectMockCRSFDMA() {
     uint16_t ch1 = 992 + ((rand() % 160) - 80);
     uint16_t ch2 = 992 + ((rand() % 160) - 80);
     uint16_t ch3 = 992 + ((rand() % 160) - 80);
-    uint16_t ch4 = 350 + (rand() % 100);
+    ch4 = 0 + (rand() % 40); //make it ocassionally dip below 0.05 so that it arms
     uint16_t ch5 = 1500;
 
     uint8_t frame[26] = {0};
@@ -89,35 +90,25 @@ BaroTrim initMockBarometer() {
     mockTrim.P11 = -1;
 
     // Raw sensor baseline
-    baroRingBuffer[0] = 0x66; baroRingBuffer[1] = 0x66; baroRingBuffer[2] = 0x66; //raw pressure ~6,710,886
-    baroRingBuffer[3] = 0x64; baroRingBuffer[4] = 0x00; baroRingBuffer[5] = 0x00; //raw temperature  ~6,553,600
+    baroBuffer[0] = 0x66; baroBuffer[1] = 0x66; baroBuffer[2] = 0x66; //raw pressure ~6,710,886
+    baroBuffer[3] = 0x64; baroBuffer[4] = 0x00; baroBuffer[5] = 0x00; //raw temperature  ~6,553,600
 
     return mockTrim;
 }
 
-void injectMockBaroDMA() {
-    static uint16_t head = 0;
-    static uint8_t frameBuf[6];
-    static uint8_t byteIdx = 6; //forces a fresh frame to be generated on first call
+void injectMockBaroDMA() { //now called synchronously from burstBaro_DMATransfer, not from the periodic tick
+    static int32_t rawPressure = 0x666666;
+    static int32_t rawTemp = 0x640000;
 
-    if (byteIdx >= 6) {
-        //generate a new 6-byte frame, same math as before
-        static int32_t rawPressure = 0x666666;
-        static int32_t rawTemp = 0x640000;
-        int32_t currentPress = rawPressure + ((std::rand() % 2048) - 1024);
-        int32_t currentTemp  = rawTemp + ((std::rand() % 256) - 128);
-        frameBuf[0] = (currentPress >> 16) & 0xFF;
-        frameBuf[1] = (currentPress >> 8) & 0xFF;
-        frameBuf[2] = currentPress & 0xFF;
-        frameBuf[3] = (currentTemp >> 16) & 0xFF;
-        frameBuf[4] = (currentTemp >> 8) & 0xFF;
-        frameBuf[5] = currentTemp & 0xFF;
-        byteIdx = 0;
-    }
+    const int32_t currentPress = rawPressure + ((std::rand() % 2048) - 1024);
+    const int32_t currentTemp  = rawTemp + ((std::rand() % 256) - 128);
 
-    baroRingBuffer[head] = frameBuf[byteIdx++];
-    head = (head + 1) % BARO_RING_BUFFER_SIZE;
-    currentBoardConfig.baro_dma_stream->NDTR = BARO_RING_BUFFER_SIZE - head;
+    baroBuffer[0] = (currentPress >> 16) & 0xFF;
+    baroBuffer[1] = (currentPress >> 8) & 0xFF;
+    baroBuffer[2] = currentPress & 0xFF;
+    baroBuffer[3] = (currentTemp >> 16) & 0xFF;
+    baroBuffer[4] = (currentTemp >> 8) & 0xFF;
+    baroBuffer[5] = currentTemp & 0xFF;
 }
 
 void injectMockADCDMA() {
@@ -133,14 +124,14 @@ void injectMockADCDMA() {
         head = (head + 1) % BATTERY_ADC_BUFFER_SIZE;
     }
 
-    // Update NDTR so injectBatteryADCBuffer() calculates the correct headIndex
+    //update NDTR so injectBatteryADCBuffer() calculates the correct headIndex
     currentBoardConfig.battery_dma_stream->NDTR = BATTERY_ADC_BUFFER_SIZE - head;
 }
 
 void injectMockGPSDMA() {
     static uint16_t head = 0;
 
-    // Sample NMEA string with simulated position (e.g., 37.7749 N, 122.4194 W, 10 Sats, Fix Valid)
+    //sample NMEA string with simulated position (e.g., 37.7749 N, 122.4194 W, 10 Sats, Fix Valid)
     const char* nmeaSentence = "$GNGGA,123519,3746.494,N,12225.164,W,1,10,0.9,50.0,M,0.0,M,,*47\r\n";
     const uint16_t len = strlen(nmeaSentence);
 
@@ -150,4 +141,85 @@ void injectMockGPSDMA() {
     }
 
     currentBoardConfig.gps_dma_stream->NDTR = GPS_RING_BUFFER_SIZE - head;
+}
+
+void injectMockOSDDMA() {
+    static uint16_t head = 0;
+    static uint32_t lastVTXPingTime = 0;
+
+    //only inject evedry 50 ms
+    if (globalSystemTicks - lastVTXPingTime < 50) {
+        return;
+    }
+    lastVTXPingTime = globalSystemTicks;
+
+    uint8_t cmd = 0;
+    uint8_t size = 0;
+    uint8_t payload[16] = {0};
+
+    bool corruptChecksum = false;
+    bool corruptHeader = false;
+
+    int command = std::rand() % 6;
+
+    switch (command) {
+        case 0: //fc variant
+            cmd = 2; size = 0; break;
+
+        case 1: //status
+            cmd = 30; size = 0; break;
+
+        case 2: //rc channels
+            cmd = 105; size = 0; break;
+
+        case 3: //stress test (random command + payload)
+            cmd = (std::rand() % 100) + 150;
+            size = (std::rand() % 10) + 1;
+            for (int i = 0; i < size; i++) {
+                payload[i] = std::rand() % 256;
+            }
+            break;
+        case 4:
+            cmd = 105;
+            size = 0;
+            corruptChecksum = true;
+            break;
+        case 5:
+            cmd = 30;
+            size = 0;
+            corruptHeader = true;
+            break;
+    }
+
+    //calc real checksum
+    uint8_t crc = size ^ cmd;
+    for (int i = 0; i < size; i++) {
+        crc ^= payload[i];
+    }
+
+    if (corruptChecksum) {
+        crc ^= 0xFF; //invert if corrupted
+    }
+
+    //helper to push a byte into the ring buffer
+    auto pushByte = [&](uint8_t b) {
+        osdRingBuffer[head] = b;
+        head = (head + 1) % OSD_RING_BUFFER_SIZE;
+    };
+
+    //inject
+    pushByte('$');
+    pushByte(corruptHeader ? 'X' : 'M'); //replaces 'M' with 'X' to break the header sometimes
+    pushByte('<');
+    pushByte(size);
+    pushByte(cmd);
+
+    for (int i = 0; i < size; i++) {
+        pushByte(payload[i]);
+    }
+
+    pushByte(crc);
+
+    //move the fake hardware write pointer
+    currentBoardConfig.osd_rx_dma_stream->NDTR = OSD_RING_BUFFER_SIZE - head;
 }

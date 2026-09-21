@@ -1,5 +1,5 @@
 //
-// Created by Akshay Gillett on 7/16/26.
+// Helpers.h by Akshay Gillett on 7/16/26.
 //
 
 #ifndef DRONE_RTOS_HELPERS_H
@@ -33,6 +33,12 @@ extern uint8_t crc8_dvb_s2(const uint8_t* data, uint8_t len);
 
 extern int32_t parseNmeaCoord(const char* str, char dir);
 extern uint32_t getUnusedStackWords(const uint8_t taskIdx);
+
+extern void assignChannel(volatile uint16_t*& ch, uint16_t chNum);
+
+extern void sendCRSFTelemetry_DMA(const uint8_t* payload, uint8_t payloadLen);
+extern void sendMSPResponse(uint8_t cmd, uint8_t* payload, uint8_t size);
+
 
 struct BaroTrim {
     //temperature calibration
