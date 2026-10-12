@@ -6,11 +6,7 @@
 .thumb_func
 .type PendSV_Handler, %function
 
-.extern currTaskAddress
-.extern nextTaskAddress
-
-.extern currExcReturnAddress
-.extern nextExcReturnAddress
+.extern nextExcReturn
 
 PendSV_Handler:
     CPSID I
@@ -18,25 +14,16 @@ PendSV_Handler:
     VSTMDB R0!, {S16-S31}
     STMDB R0!, {R4-R11}
 
-    LDR R1, =currTaskAddress
-    LDR R1, [R1]
-    STR R0, [R1]
+    MOV R1, LR
+    BL  decideNextTask
 
-    LDR R1, =currExcReturnAddress
+    LDR R1, =nextExcReturn
     LDR R1, [R1]
-    STR LR, [R1]
-
-    LDR R1, =nextTaskAddress
-    LDR R1, [R1]
-    LDR R0, [R1]
+    MOV LR, R1
 
     LDMIA R0!, {R4-R11}
     VLDMIA R0!, {S16-S31}
     MSR PSP, R0
-
-    LDR R1, =nextExcReturnAddress
-    LDR R1, [R1]
-    LDR LR, [R1]
 
     CPSIE I
     BX LR

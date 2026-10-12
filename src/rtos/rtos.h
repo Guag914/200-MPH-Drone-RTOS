@@ -56,16 +56,19 @@ extern "C" {
 #endif
 
 void start_drone_rtos(void);
-extern uint32_t** currTaskAddress;
-extern uint32_t** nextTaskAddress;
-
-extern uint32_t* currExcReturnAddress;
-extern uint32_t* nextExcReturnAddress;
+// extern uint32_t** currTaskAddress;
+// extern uint32_t** nextTaskAddress;
+//
+// extern uint32_t* currExcReturnAddress;
+// extern uint32_t* nextExcReturnAddress;
+//
+// extern int preemptDepth;
 
 extern int currTaskIndex;
 extern int nextTaskIndex;
 
-extern int preemptDepth;
+extern volatile uint32_t nextExcReturn;
+
 extern int currLoopIndex;
 
 extern volatile uint32_t globalSystemTicks;
@@ -82,7 +85,7 @@ extern bool protectStackGuard(uint32_t guardBaseAddr);
 
 extern TaskControlBlock* findTaskByName(const char *textName);
 
-extern "C" bool switchPending;
+// extern "C" bool switchPending;
 
 extern volatile bool rtosStarted;
 extern "C" { // Re-open extern "C"

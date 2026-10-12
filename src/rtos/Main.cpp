@@ -24,10 +24,21 @@ int nextTaskIndex = 0;
 
 int currLoopIndex;
 
-static int preemptStack[MAX_TASKS];
-int preemptDepth = 0;
+// uint32_t** currTaskAddress = nullptr;
+// uint32_t** nextTaskAddress = nullptr;
+// uint32_t* currExcReturnAddress = nullptr; //used for task recollection (bx lr bug) because r0 sometimes gets corrupted
+// uint32_t* nextExcReturnAddress = nullptr;
+//
+// //universal helpers to stop pendSV getting overwritten
+// bool switchPending = false;
+// static int pendingWinnerIndex = -1;
+//
+// static int preemptStack[MAX_TASKS];
+// int preemptDepth = 0;
 
+//only two variables for scheduling now
 static uint32_t pendingInterruptMask = 0;
+volatile uint32_t nextExcReturn;
 
 //sim helpers
 #ifdef SIMULATION
@@ -241,176 +252,80 @@ bool protectStackGuard(const uint32_t guardBaseAddr) {
         return true;
 }
 
-uint32_t** currTaskAddress = nullptr;
-uint32_t** nextTaskAddress = nullptr;
-uint32_t* currExcReturnAddress = nullptr; //used for task recollection (bx lr bug) because r0 sometimes gets corrupted
-uint32_t* nextExcReturnAddress = nullptr;
+static TaskControlBlock* findNextTask(TaskType taskType) {
+    int nextTaskPriority = -1;
+    int nextTaskIdx = 0; //defaults to scheduler if no tasks are ready
 
-//universal helpers to stop pendSV getting overwritten
-bool switchPending = false;
-static int pendingWinnerIndex = -1;
+    for (int i = 1; i < activeTasks; i++) { //skip first task as it is the scheduler
+        TaskControlBlock* inspectedTask = &taskControlBlocks[i];
 
-void yieldCurrentTask() {
-    if (!rtosStarted) {
-        return;
+        if (inspectedTask->taskType != taskType ||
+            inspectedTask->taskState != TaskState::READY ||
+            inspectedTask->priority <= nextTaskPriority
+           ) { continue; }
+
+        nextTaskPriority = i;
+        nextTaskIdx = i;
     }
 
-    __disable_irq();
+    return &taskControlBlocks[nextTaskIdx];
+}
 
-    taskControlBlocks[currTaskIndex].taskState = TaskState::BLOCKED; //block the current interrupt and go back to the scheduler process
+extern "C" uint32_t* decideNextTask(uint32_t* outgoingSP, uint32_t outgoingExcReturn) {
+    taskControlBlocks[currTaskIndex].topOfStack = outgoingSP;
+    taskControlBlocks[currTaskIndex].excReturn  = outgoingExcReturn;
 
-    //static does NOT mean universal var in c++
-    //check for any deferred interrupt request, highest priority wins
-    int pendingIdx = -1, pendingPrio = -1;
-    for (int i = 0; i < activeTasks; i++) {
-        if (pendingInterruptMask & (1u << i)) {
-            if (static_cast<int>(taskControlBlocks[i].priority) > pendingPrio) {
-                pendingPrio = taskControlBlocks[i].priority;
-                pendingIdx = i;
+    if (taskControlBlocks[currTaskIndex].taskState == TaskState::RUNNING) {
+        taskControlBlocks[currTaskIndex].taskState = TaskState::READY;   // preempted, not finished
+    }
+
+    int nextIndex = -1, nextPriority = -1;
+    for (int i = 0; i < activeTasks; i++) {   // interrupt tasks win over scheduled, same as before
+        if (taskControlBlocks[i].taskType == TaskType::INTERRUPT && taskControlBlocks[i].taskState == TaskState::READY) {
+            if (static_cast<int>(taskControlBlocks[i].priority) > nextPriority) {
+                nextPriority = taskControlBlocks[i].priority;
+                nextIndex = i;
             }
         }
     }
-
-    int nextTaskIdx;
-    if (pendingIdx != -1) {
-        pendingInterruptMask &= ~(1u << pendingIdx);
-        nextTaskIdx = pendingIdx;
-        switchPending = true;
-        pendingWinnerIndex = pendingIdx;
-    } else {
-        //dynamically switch to the last task
-        nextTaskIdx = (preemptDepth > 0) ? preemptStack[--preemptDepth] : 0;
-        if (preemptDepth == 0 && nextTaskIdx == 0) {
-            switchPending = false;
-            pendingWinnerIndex = -1;
+    if (nextIndex == -1) {
+        for (int i = 0; i < activeTasks; i++) {
+            if (taskControlBlocks[i].taskType == TaskType::SCHEDULED && taskControlBlocks[i].taskState == TaskState::READY) {
+                if (static_cast<int>(taskControlBlocks[i].priority) > nextPriority) {
+                    nextPriority = taskControlBlocks[i].priority;
+                    nextIndex = i;
+                }
+            }
         }
     }
+    if (nextIndex == -1) nextIndex = 0;   // idle fallback
 
-    currTaskAddress = &(taskControlBlocks[currTaskIndex].topOfStack);
-    nextTaskAddress = &(taskControlBlocks[nextTaskIdx].topOfStack);
-    currExcReturnAddress = &(taskControlBlocks[currTaskIndex].excReturn);
-    nextExcReturnAddress = &(taskControlBlocks[nextTaskIdx].excReturn);
+    currTaskIndex = nextIndex;
+    taskControlBlocks[nextIndex].taskState = TaskState::RUNNING;
+    nextExcReturn = taskControlBlocks[nextIndex].excReturn;
+    return taskControlBlocks[nextIndex].topOfStack;
+}
 
-    currTaskIndex = nextTaskIdx;
-    taskControlBlocks[currTaskIndex].taskState = TaskState::RUNNING;
-
-    //fire the context switch back to the scheduled loop using pendSV
-    SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
-
+void yieldCurrentTask() {
+    if (!rtosStarted) return;
+    __disable_irq();
+    taskControlBlocks[currTaskIndex].taskState = TaskState::BLOCKED;
     __enable_irq();
+    SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
     __ISB();
 }
 
-
 void decideNextInterruptTask(TaskControlBlock* interruptTask) {
-    __disable_irq(); //guards against pointers being overrwritten by simultaneous interrupts
-
-    int comparisonIndex = switchPending ? pendingWinnerIndex : currTaskIndex;
-
-    if (taskControlBlocks[comparisonIndex].taskType == TaskType::INTERRUPT &&
-    taskControlBlocks[comparisonIndex].taskState == TaskState::RUNNING) {
-        if (interruptTask->priority <= taskControlBlocks[comparisonIndex].priority) {
-            for (int i = 0; i < activeTasks; i++) {
-                if (&taskControlBlocks[i] == interruptTask) {
-                    pendingInterruptMask |= (1u << i); //remember the lower priority task instead of dropping it
-                    break;
-                }
-            }
-            __enable_irq();
-            return;
-        }
-    }
-
-    if (!switchPending) {
-        switchPending = true;
-
-        //append to the LIFO stack to have a preemt queue if multiple interrupts activate at once
-        preemptStack[preemptDepth++] = currTaskIndex;
-
-        //an interrupt is already pending, but previous is not saved
-        //make the last task READY so it can run next tick (or after curr task is saved)
-        taskControlBlocks[currTaskIndex].taskState = TaskState::READY;
-        currTaskAddress = &(taskControlBlocks[currTaskIndex].topOfStack);
-        currExcReturnAddress = &(taskControlBlocks[currTaskIndex].excReturn);
-    } else {
-        if (preemptDepth >= MAX_TASKS) {
-            drone.currentSystemState = FlightState::ERROR;
-            setEventMessage(drone.errorMSG, ERROR::PREEMPT_OVERFLOW);
-        } else {
-            // preemptStack[preemptDepth++] = pendingWinnerIndex;
-            taskControlBlocks[pendingWinnerIndex].taskState = TaskState::READY;
-        }
-    }
-
-    //update addresses to point to next and current tasks
-    nextTaskAddress = &(interruptTask->topOfStack);
-    nextExcReturnAddress = &(interruptTask->excReturn);
-
-    //update current task index to the interrupt task
-    for (int i = 0; i < activeTasks; i++) {
-        if (&taskControlBlocks[i] == interruptTask) {
-            currTaskIndex = i;
-            break;
-        }
-    }
-
-    //set the next task to running
-    interruptTask->taskState = TaskState::RUNNING;
-    pendingWinnerIndex = currTaskIndex;
-
-    __enable_irq(); //enable before pendsv
-    SCB->ICSR = SCB_ICSR_PENDSVSET_Msk; //trigger pendsv to switch
+    __disable_irq();
+    interruptTask->taskState = TaskState::READY;
+    __enable_irq();
+    SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
 }
 
 void decideNextScheduledTask() {
-    __disable_irq();
-
-    int highestPriorityTaskIndex = -1;
-    int highestPriorityValue = -1;
-
-    for (int i = 0; i < activeTasks; i++) {
-        if (taskControlBlocks[i].taskType == TaskType::SCHEDULED &&
-            taskControlBlocks[i].taskState == TaskState::READY) {
-
-            if (static_cast<int>(taskControlBlocks[i].priority) > highestPriorityValue) {
-                highestPriorityValue = taskControlBlocks[i].priority;
-                highestPriorityTaskIndex = i;
-            }
-        }
-    }
-
-    if (highestPriorityTaskIndex != -1 ) {
-
-        int oldTaskIndex = currTaskIndex;
-
-        //force previous periodic tasks back into BLOCKED state until their timer expires
-        if (oldTaskIndex != 0 && taskControlBlocks[oldTaskIndex].taskType == TaskType::SCHEDULED) {
-            taskControlBlocks[oldTaskIndex].taskState = TaskState::BLOCKED;
-        } else {
-            taskControlBlocks[oldTaskIndex].taskState = TaskState::READY;
-        }
-
-        const int nextTaskIdx = highestPriorityTaskIndex;
-
-        currTaskAddress = &(taskControlBlocks[currTaskIndex].topOfStack);
-        nextTaskAddress = &(taskControlBlocks[nextTaskIdx].topOfStack);
-
-        currExcReturnAddress = &(taskControlBlocks[currTaskIndex].excReturn);
-        nextExcReturnAddress = &(taskControlBlocks[nextTaskIdx].excReturn);
-
-        //  taskControlBlocks[currTaskIndex].taskState = TaskState::READY; // set it to running so it restores where it left off
-        currTaskIndex = nextTaskIdx;
-        taskControlBlocks[currTaskIndex].taskState = TaskState::RUNNING;
-        taskControlBlocks[currTaskIndex].lastRunTime = globalSystemTicks;
-
-        __enable_irq(); //disable lock BEFORE sending pend
-
-        SCB->ICSR = SCB_ICSR_PENDSVSET_Msk; //trigger pendsv
-
-        __ISB(); //forces instructions from memory instantly - refresh
-    }
-
-    __enable_irq();
+    // idle just asks for a switch; decideNextTask finds whichever scheduled task is READY
+    SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
+    __ISB();
 }
 
 TaskControlBlock* findTaskByName(const char *textName) {
@@ -426,10 +341,10 @@ extern "C" void SysTick_Handler() {
     HAL_IncTick();
     globalSystemTicks++;
 
-    if (preemptDepth == 0) {
-        switchPending = false;
-        pendingWinnerIndex = -1;
-    }
+    // if (preemptDepth == 0) {
+    //     switchPending = false;
+    //     pendingWinnerIndex = -1;
+    // }
 
     printToUSART("============------------ NEW TICK: ");
     printToUSART(globalSystemTicks);
@@ -572,7 +487,7 @@ extern "C" void start_drone_rtos() {
     taskControlBlocks[0].priority = 0; //lowest priority background worker
     taskControlBlocks[0].taskState = TaskState::RUNNING;
 
-    currTaskAddress = &(taskControlBlocks[0].topOfStack);
+    // currTaskAddress = &(taskControlBlocks[0].topOfStack);
 
 
     #ifdef  USER_TASKS
